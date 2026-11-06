@@ -39,7 +39,8 @@
     "longDescription": "EZMan is a fast, lightweight desktop API client with collections, environments and scripting.",
     "copyright": "",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "createUpdaterArtifacts": true
   },
