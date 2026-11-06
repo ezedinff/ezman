@@ -62,6 +62,17 @@ const COMMON_HEADERS = [
   'X-API-Key',
 ];
 
+const extractPathVariableNames = (url: string): string[] => {
+  const afterHost = url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, '').replace(/^\{\{[^}]+\}\}/, '');
+  const path = afterHost.split(/[?#]/)[0];
+  const names: string[] = [];
+  for (const segment of path.split('/')) {
+    if (/^:[A-Za-z0-9_.-]+$/.test(segment)) names.push(segment.slice(1));
+    for (const m of segment.matchAll(/(?<!\{)\{([A-Za-z0-9_.-]+)\}(?!\})/g)) names.push(m[1]);
+  }
+  return [...new Set(names)];
+};
+
 export const RequestEditor: React.FC<RequestEditorProps> = ({
   request,
   onChange,
@@ -207,6 +218,15 @@ export const RequestEditor: React.FC<RequestEditorProps> = ({
   const deleteParam = (index: number) => {
     const updated = request.params.filter((_, i) => i !== index);
     updateUrlAndParams(request.url, updated);
+  };
+
+  const pathVariableNames = extractPathVariableNames(request.url);
+  const setPathVariable = (key: string, value: string) => {
+    const existing = request.path_variables || [];
+    const next = existing.some((p) => p.key === key)
+      ? existing.map((p) => (p.key === key ? { ...p, value } : p))
+      : [...existing, { key, value, enabled: true }];
+    onChange({ ...request, path_variables: next });
   };
 
   const updateHeader = (index: number, field: keyof KeyValueItem, val: any) => {
@@ -520,6 +540,41 @@ export const RequestEditor: React.FC<RequestEditorProps> = ({
                 </tbody>
               </table>
             </div>
+
+            {pathVariableNames.length > 0 && (
+              <div className="space-y-2 pt-2">
+                <div className="text-gray-400 text-[11px]">
+                  Path Variables
+                  <span className="ml-2 text-gray-600">from :name or {'{name}'} in the URL</span>
+                </div>
+                <div className="border border-gray-800 rounded-md overflow-hidden bg-[#14161b]">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-gray-800 bg-gray-900/60 text-gray-400 font-medium text-[11px]">
+                        <th className="py-1.5 px-3 w-1/3">Key</th>
+                        <th className="py-1.5 px-3">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800/60 font-mono text-xs">
+                      {pathVariableNames.map((name) => (
+                        <tr key={name} className="hover:bg-gray-800/20">
+                          <td className="py-1 px-3 text-gray-300">{name}</td>
+                          <td className="py-1 px-3">
+                            <input
+                              type="text"
+                              value={(request.path_variables || []).find((p) => p.key === name)?.value || ''}
+                              onChange={(e) => setPathVariable(name, e.target.value)}
+                              placeholder="value (supports {{variables}})"
+                              className="w-full bg-transparent text-gray-200 outline-none placeholder-gray-600"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

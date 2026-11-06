@@ -140,6 +140,15 @@ impl VariableResolver {
     pub fn resolve_request(&self, request: &RequestItem) -> RequestItem {
         let mut resolved = request.clone();
         resolved.url = self.resolve_string(&request.url);
+        let saved: Vec<(String, String)> = request
+            .path_variables
+            .iter()
+            .filter(|p| p.enabled && !p.key.is_empty() && !p.value.is_empty())
+            .map(|p| (p.key.clone(), self.resolve_string(&p.value)))
+            .collect();
+        if !saved.is_empty() {
+            resolved.url = overrides::apply_path_params(&resolved.url, &saved).0;
+        }
         resolved.params = self.resolve_key_value_items(&request.params);
         resolved.headers = self.resolve_key_value_items(&request.headers);
         if let Some(auth) = &request.auth {

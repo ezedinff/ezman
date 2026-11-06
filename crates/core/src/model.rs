@@ -192,6 +192,8 @@ pub struct RequestItem {
     #[serde(default)]
     pub params: Vec<KeyValueItem>,
     #[serde(default)]
+    pub path_variables: Vec<KeyValueItem>,
+    #[serde(default)]
     pub headers: Vec<KeyValueItem>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
@@ -213,6 +215,7 @@ impl RequestItem {
             method,
             url: url.into(),
             params: Vec::new(),
+            path_variables: Vec::new(),
             headers: Vec::new(),
             auth: None,
             body: RequestBodyConfig::default(),

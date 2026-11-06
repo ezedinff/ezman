@@ -50,6 +50,7 @@ export interface RequestItem {
   method: HttpMethod;
   url: string;
   params: KeyValueItem[];
+  path_variables?: KeyValueItem[];
   headers: KeyValueItem[];
   auth?: AuthConfig;
   body: RequestBodyConfig;

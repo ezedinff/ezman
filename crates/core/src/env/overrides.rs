@@ -111,7 +111,10 @@ pub fn resolve_with_overrides(
         resolver.insert(k.clone(), v.clone());
     }
 
-    let mut resolved = resolver.resolve_request(request);
+    // Per-call path_params win over path variables saved on the request.
+    let mut base = request.clone();
+    base.path_variables.retain(|p| !overrides.path_params.iter().any(|(k, _)| k == &p.key));
+    let mut resolved = resolver.resolve_request(&base);
     let mut applied = Vec::new();
     let mut warnings = Vec::new();
 
@@ -543,6 +546,19 @@ mod tests {
         assert_eq!(out.body.graphql_query.unwrap(), "{ a }");
         let v: Value = serde_json::from_str(&out.body.graphql_variables.unwrap()).unwrap();
         assert_eq!(v, json!({"x": 5, "y": 2}));
+    }
+
+    #[test]
+    fn saved_path_variables_apply_and_overrides_win() {
+        let mut r = req("http://h/u/:id/p/:pid");
+        r.path_variables.push(KeyValueItem::new("id", "saved"));
+        r.path_variables.push(KeyValueItem::new("pid", "{{p}}"));
+        let o = ov(json!({"variables": {"p": "5"}}));
+        assert_eq!(resolve_with_overrides(None, None, &r, &o).unwrap().request.url, "http://h/u/saved/p/5");
+        let o = ov(json!({"path_params": {"id": "call"}, "variables": {"p": "6"}}));
+        let out = resolve_with_overrides(None, None, &r, &o).unwrap();
+        assert_eq!(out.request.url, "http://h/u/call/p/6");
+        assert!(out.warnings.is_empty());
     }
 
     #[test]
