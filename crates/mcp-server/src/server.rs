@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use ezman_core::{
-    Environment, Folder, HttpEngine, StorageManager, VariableResolver,
+    detected_variables, path_placeholders, resolve_with_overrides, Environment, Folder, HttpEngine,
+    RequestOverrides, StorageManager,
 };
 use rmcp::{
     model::{
@@ -75,6 +76,36 @@ impl EzmanMcpServer {
                 "environment_id": {
                     "type": "string",
                     "description": "Explicit environment ID or name, or 'none' to execute without environment variables. Environment selection is required."
+                },
+                "variables": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Per-call {{variable}} overrides. Highest precedence (collection < environment < variables). Use \"\" for an empty value; null/object/array values are rejected."
+                },
+                "query": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Merge/override query params for this execution only (case-sensitive keys)."
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Merge/override headers for this execution only (case-insensitive keys)."
+                },
+                "path_params": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Replace whole ':param' or '{param}' segments in the URL path (applied after {{variables}} are resolved; values are percent-encoded). Unmatched keys produce a warning."
+                },
+                "body": {
+                    "description": "Override the request body for this execution only. String = raw body. Object = JSON body (see body_mode). For GraphQL requests use {\"query\": \"...\", \"variables\": {...}}. Omit or null to keep the saved body.",
+                    "oneOf": [ { "type": "string" }, { "type": "object" } ]
+                },
+                "body_mode": {
+                    "type": "string",
+                    "enum": ["replace", "merge_json"],
+                    "default": "replace",
+                    "description": "'replace' (default) replaces the saved body; 'merge_json' deep-merges an object into the saved JSON object body (arrays/scalars are replaced)."
                 }
             },
             "required": ["request_id"]
@@ -115,7 +146,7 @@ impl EzmanMcpServer {
 
             Tool::new(
                 "execute_request",
-                "Execute a saved request using the shared Rust HTTP engine. NOTE: POST, PUT, PATCH, and DELETE requests may mutate remote state. Explicit environment selection is required.",
+                "Execute a saved request using the shared Rust HTTP engine. NOTE: POST, PUT, PATCH, and DELETE requests may mutate remote state. Explicit environment selection is required. Optional per-call overrides (variables, path_params, query, headers, body, body_mode) are ephemeral and never saved. Variable precedence: collection < environment < per-call variables.",
                 Arc::new(execute_request_schema.as_object().unwrap().clone()),
             )
             .with_title("Execute Request")
@@ -177,6 +208,8 @@ impl EzmanMcpServer {
                                 method: req.method.to_string(),
                                 url: req.url.clone(),
                                 is_mutating: req.method.is_mutating(),
+                                detected_variables: detected_variables(req),
+                                path_placeholders: path_placeholders(&req.url),
                             });
                         }
                     }
@@ -208,6 +241,8 @@ impl EzmanMcpServer {
                         let result = json!({
                             "collection_id": col.id,
                             "collection_name": col.name,
+                            "detected_variables": detected_variables(&req),
+                            "path_placeholders": path_placeholders(&req.url),
                             "request": sanitized_req,
                         });
                         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -277,26 +312,46 @@ impl EzmanMcpServer {
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("Request with ID '{}' not found", req_id))?;
 
-                let resolver = VariableResolver::from_collection_and_environment(
+                let overrides = RequestOverrides::from_args(&args).map_err(|e| e.to_string())?;
+                let overridden = resolve_with_overrides(
                     Some(&collection),
                     selected_env.as_ref(),
-                );
-                let resolved_request = resolver.resolve_request(&request);
+                    &request,
+                    &overrides,
+                )
+                .map_err(|e| e.to_string())?;
+                let resolved_request = overridden.request;
 
                 let response = self
                     .http_engine
                     .execute(&resolved_request, collection.auth.as_ref())
                     .await;
 
+                // Never echo secret environment values back to the agent.
+                let secrets: Vec<&str> = selected_env
+                    .iter()
+                    .flat_map(|e| e.variables.iter())
+                    .filter(|v| v.enabled && v.secret && !v.value.is_empty())
+                    .map(|v| v.value.as_str())
+                    .collect();
+                let redact = |text: &str| {
+                    secrets
+                        .iter()
+                        .fold(text.to_string(), |acc, s| acc.replace(s, "[REDACTED]"))
+                };
+
                 let output = json!({
                     "request": {
                         "id": request.id,
                         "name": request.name,
                         "method": request.method.as_str(),
-                        "url": resolved_request.url,
+                        "url": redact(&resolved_request.url),
+                        "resolved_url": redact(&resolved_request.url),
                         "is_mutating": request.method.is_mutating(),
                         "environment": selected_env.as_ref().map(|e| e.name.as_str()).unwrap_or("none"),
+                        "overrides_applied": overridden.applied,
                     },
+                    "warnings": overridden.warnings,
                     "response": {
                         "status": response.status,
                         "status_text": response.status_text,
@@ -304,7 +359,7 @@ impl EzmanMcpServer {
                         "size_bytes": response.size_bytes,
                         "headers": response.headers,
                         "body": response.body,
-                        "error": response.error,
+                        "error": response.error.as_deref().map(|e| redact(e)),
                     }
                 });
 
@@ -355,6 +410,8 @@ struct RequestSummary {
     method: String,
     url: String,
     is_mutating: bool,
+    detected_variables: Vec<String>,
+    path_placeholders: Vec<String>,
 }
 
 fn collect_requests_from_folder(
@@ -378,6 +435,8 @@ fn collect_requests_from_folder(
                 method: req.method.to_string(),
                 url: req.url.clone(),
                 is_mutating: req.method.is_mutating(),
+                                detected_variables: detected_variables(req),
+                                path_placeholders: path_placeholders(&req.url),
             });
         }
     }

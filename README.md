@@ -122,43 +122,91 @@ The standalone `ezman-mcp` binary implements the Model Context Protocol using `s
 5. `execute_request`: Resolves variables, applies auth, and executes the HTTP request through `ezman-core`.
    - **Environment Safety Rule:** When environments exist in storage, `execute_request` strictly requires an explicit `environment_id` (or explicitly `"none"`), preventing accidental execution against unintended environments (e.g. production).
    - **Mutation Detection:** Flags potentially mutating HTTP methods (`POST`, `PUT`, `PATCH`, `DELETE`) with a safety annotation.
+   - **Per-call overrides (ephemeral, never saved to collections/environments):**
+
+     | Arg | Type | Behavior |
+     |-----|------|----------|
+     | `variables` | `{string: string}` | `{{var}}` overrides. Precedence: **collection < environment < `variables`**. `""` is an empty value; `null`/object/array values are rejected. |
+     | `path_params` | `{string: string}` | Replaces whole `:id` / `{id}` segments in the URL path, applied *after* `{{vars}}` are resolved. Values are percent-encoded; host and query are untouched; unmatched keys return a `warnings` entry. |
+     | `query` | `{string: string}` | Merged into query params (case-sensitive keys; existing keys are replaced). |
+     | `headers` | `{string: string}` | Merged into headers (case-insensitive keys; existing keys are replaced). |
+     | `body` | string \| object | String = raw body. Object = JSON body. For GraphQL requests use `{"query": "...", "variables": {...}}`. Omitted/`null` keeps the saved body. |
+     | `body_mode` | `replace` \| `merge_json` | `replace` (default) swaps the body; `merge_json` deep-merges an object into the saved JSON object body (arrays and scalars are replaced; errors if the saved body is not a JSON object). |
+
+     Override values may themselves use `{{var}}`. The response includes `request.resolved_url`, `request.overrides_applied` and `warnings`; secret environment values are redacted from the URL and errors.
+
+     ```json
+     { "request_id": "get-user", "environment_id": "Development", "variables": { "userId": "123" } }
+     { "request_id": "get-user", "environment_id": "Development", "path_params": { "id": "123" } }
+     { "request_id": "update-user", "environment_id": "Development", "body": { "name": "updated" }, "body_mode": "merge_json" }
+     ```
+
+     Tip: save requests with `{{var}}` or `:param` templates so agents can reuse them. `get_request` and `list_requests` expose `detected_variables` and `path_placeholders` to show what can be passed.
 
 ---
 
 ## MCP Configuration Guide
 
-### 1. Cursor (`.cursor/mcp.json` or `~/.cursor/mcp.json`)
+Build the MCP binary first (from the repo root):
 
-To enable `ezman` in Cursor, add the server to your Cursor MCP settings file:
+```bash
+cargo build --release -p ezman-mcp-server
+# binary: target/release/ezman-mcp
+```
+
+It reads the same local data as the desktop app from `~/.ezman/` (collections, environments).
+
+### 1. Cursor
+
+**Project-level** (recommended while working in this repo) — `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "ezman": {
-      "command": "/path/to/ezman/target/release/ezman-mcp",
+      "command": "/ABSOLUTE/PATH/TO/ezman/target/release/ezman-mcp",
       "args": []
     }
   }
 }
 ```
 
-> **Tip:** Replace `/path/to/ezman/target/release/ezman-mcp` with the absolute path to your compiled binary or installed binary location (e.g. `/usr/local/bin/ezman-mcp`).
-
-### 2. Claude Code CLI
-
-Add `ezman-mcp` to Claude Code using the `claude mcp add` command:
-
-```bash
-claude mcp add ezman -- /path/to/ezman/target/release/ezman-mcp
-```
-
-Or add it directly to your `~/.claude.json` configuration file:
+**User-level** (available in every Cursor workspace) — `~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "ezman": {
-      "command": "/path/to/ezman/target/release/ezman-mcp",
+      "command": "/ABSOLUTE/PATH/TO/ezman/target/release/ezman-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+After saving:
+
+1. Open **Cursor Settings → MCP** and confirm `ezman` is listed and enabled (green).
+2. If it shows an error, click refresh / restart Cursor so it reloads MCP servers.
+3. In chat, ask something like: “Using ezman MCP, list my collections.”
+
+Tools exposed: `list_collections`, `list_requests`, `get_request`, `list_environments`, `execute_request`.
+
+> Use an **absolute** path to `ezman-mcp`. Relative paths are unreliable for Cursor MCP.
+
+### 2. Claude Code CLI
+
+```bash
+claude mcp add ezman -- /ABSOLUTE/PATH/TO/ezman/target/release/ezman-mcp
+```
+
+Or in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "ezman": {
+      "command": "/ABSOLUTE/PATH/TO/ezman/target/release/ezman-mcp",
       "args": []
     }
   }
@@ -167,12 +215,10 @@ Or add it directly to your `~/.claude.json` configuration file:
 
 ### 3. Codex & Generic stdio MCP Clients
 
-For any client supporting stdio MCP servers:
-
 ```json
 {
   "name": "ezman",
-  "command": "/path/to/ezman/target/release/ezman-mcp",
+  "command": "/ABSOLUTE/PATH/TO/ezman/target/release/ezman-mcp",
   "args": [],
   "env": {
     "RUST_LOG": "info"

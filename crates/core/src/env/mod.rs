@@ -1,3 +1,5 @@
+pub mod overrides;
+
 use std::collections::HashMap;
 use regex::Regex;
 use crate::model::{Collection, Environment, KeyValueItem, RequestItem, AuthConfig, RequestBodyConfig, RequestBodyType};
