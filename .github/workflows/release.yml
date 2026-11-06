@@ -1,0 +1,149 @@
+name: Release
+
+# Every merge to main builds installers and publishes a new GitHub Release.
+# The version is computed automatically from the latest tag and commit messages:
+#   "feat: ..."                      -> minor bump
+#   "BREAKING CHANGE" or "type!: ..." -> major bump
+#   anything else                    -> patch bump
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+
+      - run: cargo test -p ezman-core
+
+      - name: Typecheck frontend
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+  version:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: next
+        run: |
+          last=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          if [ -z "$last" ]; then
+            next=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          else
+            IFS=. read -r major minor patch <<< "${last#v}"
+            log=$(git log "$last"..HEAD --format=%B)
+            if echo "$log" | grep -qE 'BREAKING CHANGE|^[a-z]+(\([^)]*\))?!:'; then
+              major=$((major + 1)); minor=0; patch=0
+            elif echo "$log" | grep -qE '^feat(\([^)]*\))?:'; then
+              minor=$((minor + 1)); patch=0
+            else
+              patch=$((patch + 1))
+            fi
+            next="$major.$minor.$patch"
+          fi
+          echo "Next version: $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            args: --target aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin
+          - name: macOS (Intel)
+            os: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_targets: x86_64-apple-darwin
+          - name: Windows
+            os: windows-latest
+            args: ''
+            rust_targets: ''
+
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      # The version lives in the tag; stamp it into the build without committing back to main.
+      - name: Apply version
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const v = process.env.VERSION;
+            const conf = 'apps/desktop/src-tauri/tauri.conf.json';
+            const c = JSON.parse(fs.readFileSync(conf, 'utf8'));
+            c.version = v;
+            fs.writeFileSync(conf, JSON.stringify(c, null, 2) + '\n');
+            const cargo = 'apps/desktop/src-tauri/Cargo.toml';
+            fs.writeFileSync(cargo, fs.readFileSync(cargo, 'utf8').replace(/^version = \".*\"/m, 'version = \"' + v + '\"'));
+          "
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: v${{ needs.version.outputs.version }}
+          releaseName: 'EZMan v${{ needs.version.outputs.version }}'
+          releaseBody: 'Download the installer for your platform below. Existing installs update automatically.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
