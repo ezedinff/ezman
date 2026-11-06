@@ -111,6 +111,8 @@ pub fn run() {
     let http_engine = Arc::new(HttpEngine::new().expect("Failed to initialize HTTP engine"));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             app.manage(AppState {
                 storage,

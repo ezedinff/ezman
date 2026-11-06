@@ -40,6 +40,15 @@
     "copyright": "",
     "macOS": {
       "minimumSystemVersion": "11.0"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNEODFDRTVCOTFDRjdGQUIKUldTcmY4K1JXODZCUFVFY0t3Mi92MzBVVHVudHM4SGVWZHVXL3JtVkEvdWJnenQzRm9qaUs0WHcK",
+      "endpoints": [
+        "https://github.com/ezedinff/ezman/releases/latest/download/latest.json"
+      ]
     }
   }
 }
