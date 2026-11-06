@@ -1,5 +1,5 @@
 import React from 'react';
-import { Send, Upload, Settings, Layers } from 'lucide-react';
+import { Send, Upload, Settings, Layers, Plug } from 'lucide-react';
 import { Environment } from '../types';
 
 interface HeaderProps {
@@ -8,6 +8,7 @@ interface HeaderProps {
   onSelectEnvironment: (id: string | undefined) => void;
   onOpenEnvironmentModal: () => void;
   onOpenImportModal: () => void;
+  onOpenMcpModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,6 +17,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectEnvironment,
   onOpenEnvironmentModal,
   onOpenImportModal,
+  onOpenMcpModal,
 }) => {
   return (
     <header className="h-12 border-b border-gray-800 bg-[#16181d] px-4 flex items-center justify-between select-none">
@@ -68,6 +70,15 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Upload className="w-3.5 h-3.5 text-blue-400" />
           <span>Import Postman</span>
+        </button>
+
+        <button
+          onClick={onOpenMcpModal}
+          title="Connect AI agents via MCP"
+          className="flex items-center space-x-1.5 bg-[#1e2129] hover:bg-gray-700/70 border border-gray-700/60 text-gray-200 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+        >
+          <Plug className="w-3.5 h-3.5 text-green-400" />
+          <span>MCP</span>
         </button>
 
         {/* Shortcut Hint */}

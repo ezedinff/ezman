@@ -105,6 +105,27 @@ async fn execute_request(
     Ok(response)
 }
 
+#[derive(serde::Serialize)]
+struct McpInfo {
+    path: String,
+    exists: bool,
+}
+
+/// The bundled `ezman-mcp` sidecar sits next to the app executable.
+#[tauri::command]
+fn get_mcp_info() -> Result<McpInfo, String> {
+    let name = if cfg!(windows) { "ezman-mcp.exe" } else { "ezman-mcp" };
+    let path = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .ok_or("cannot locate app directory")?
+        .join(name);
+    Ok(McpInfo {
+        exists: path.exists(),
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let storage = Arc::new(StorageManager::new().expect("Failed to initialize storage manager"));
@@ -133,6 +154,7 @@ pub fn run() {
             save_preferences,
             import_postman_collection,
             execute_request,
+            get_mcp_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

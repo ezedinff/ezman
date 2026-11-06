@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ResizeHandle } from './components/ResizeHandle';
+import { McpModal } from './components/McpModal';
 import { UpdateBanner } from './components/UpdateBanner';
 import { TabBar } from './components/TabBar';
 import { RequestEditor } from './components/RequestEditor';
@@ -81,6 +82,7 @@ export const App: React.FC = () => {
   // Modals state
   const [isEnvModalOpen, setIsEnvModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
   const [colVariablesCol, setColVariablesCol] = useState<Collection | null>(null);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -911,7 +913,9 @@ export const App: React.FC = () => {
         onSelectEnvironment={setActiveEnvironmentId}
         onOpenEnvironmentModal={() => setIsEnvModalOpen(true)}
         onOpenImportModal={() => setIsImportModalOpen(true)}
+        onOpenMcpModal={() => setIsMcpModalOpen(true)}
       />
+      <McpModal isOpen={isMcpModalOpen} onClose={() => setIsMcpModalOpen(false)} />
 
       <UpdateBanner />
 

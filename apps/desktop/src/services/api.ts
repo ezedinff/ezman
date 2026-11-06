@@ -60,6 +60,11 @@ const setLocalEnvironments = (envs: Environment[]) => {
 };
 
 export const api = {
+  async getMcpInfo(): Promise<{ path: string; exists: boolean } | null> {
+    const invoke = await getInvoke();
+    return invoke ? await invoke<{ path: string; exists: boolean }>('get_mcp_info') : null;
+  },
+
   async listCollections(): Promise<Collection[]> {
     const invoke = await getInvoke();
     if (invoke) {
