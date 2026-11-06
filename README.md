@@ -239,7 +239,7 @@ Or in `~/.claude.json`:
 
 ```bash
 # Clone the repository
-git clone https://github.com/example/ezman.git
+git clone https://github.com/ezedinff/ezman.git
 cd ezman
 
 # Install frontend dependencies
