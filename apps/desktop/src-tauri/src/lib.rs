@@ -99,9 +99,12 @@ async fn execute_request(
     );
 
     let resolved_req = resolver.resolve_request(&request);
-    let inherited_auth = collection.as_ref().and_then(|c| c.auth.as_ref());
+    let inherited_auth = collection
+        .as_ref()
+        .and_then(|c| c.auth.as_ref())
+        .map(|auth| resolver.resolve_auth(auth));
 
-    let response = state.http_engine.execute(&resolved_req, inherited_auth).await;
+    let response = state.http_engine.execute(&resolved_req, inherited_auth.as_ref()).await;
     Ok(response)
 }
 
