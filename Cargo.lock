@@ -835,6 +835,8 @@ dependencies = [
 name = "ezman-mcp-server"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "ezman-core",
  "rmcp",
  "serde",
@@ -843,6 +845,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

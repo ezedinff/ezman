@@ -360,6 +360,7 @@ export const App: React.FC = () => {
         defaultCol = {
           id: 'col_' + Math.random().toString(36).substring(2, 9),
           name: 'Default Collection',
+          mcp_allow_secrets: false,
           variables: [],
           folders: [],
           requests: [req],
@@ -482,6 +483,7 @@ export const App: React.FC = () => {
     const newCol: Collection = {
       id: 'col_' + Math.random().toString(36).substring(2, 9),
       name: 'New Collection',
+      mcp_allow_secrets: false,
       variables: [],
       folders: [],
       requests: [],

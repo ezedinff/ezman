@@ -1,8 +1,7 @@
 {
   "mcpServers": {
     "ezman": {
-      "command": "/Users/EFEDLU/Documents/projects/ezman/target/release/ezman-mcp",
-      "args": []
+      "command": "/Applications/EZMan.app/Contents/MacOS/ezman-mcp"
     }
   }
 }

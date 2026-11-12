@@ -4,6 +4,7 @@ export interface KeyValueItem {
   key: string;
   value: string;
   enabled: boolean;
+  secret?: boolean;
   description?: string;
 }
 
@@ -71,6 +72,7 @@ export interface Folder {
 export interface Collection {
   id: string;
   name: string;
+  mcp_allow_secrets: boolean;
   description?: string;
   variables: KeyValueItem[];
   auth?: AuthConfig;
@@ -90,6 +92,7 @@ export interface EnvironmentVariable {
 export interface Environment {
   id: string;
   name: string;
+  mcp_allow_secrets: boolean;
   variables: EnvironmentVariable[];
   created_at: string;
   updated_at: string;

@@ -52,6 +52,7 @@ export const EnvironmentModal: React.FC<EnvironmentModalProps> = ({
     const newEnv: Environment = {
       id: 'env_' + Math.random().toString(36).substring(2, 9),
       name: 'New Environment',
+      mcp_allow_secrets: false,
       variables: [
         { key: 'baseUrl', value: 'http://localhost:3000', enabled: true, secret: false },
       ],
@@ -175,6 +176,21 @@ export const EnvironmentModal: React.FC<EnvironmentModalProps> = ({
                     <span>Delete</span>
                   </button>
                 </div>
+
+                <label className="flex items-start gap-2 rounded border border-gray-800 bg-[#13151a] p-2 text-xs text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={editingEnv.mcp_allow_secrets ?? false}
+                    onChange={(e) => setEditingEnv({ ...editingEnv, mcp_allow_secrets: e.target.checked })}
+                    className="mt-0.5 rounded border-gray-700 bg-gray-800 text-blue-600 focus:ring-0"
+                  />
+                  <span>
+                    Allow MCP secret access
+                    <span className="block text-[11px] text-gray-500 mt-1">
+                      Agents can read and change secret variables when enabled. Off by default; saved requests can still use secrets.
+                    </span>
+                  </span>
+                </label>
 
                 <div className="flex-1 flex flex-col overflow-hidden">
                   <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1.5">

@@ -104,10 +104,44 @@ impl StorageManager {
         Ok(())
     }
 
+    pub fn update_collection(
+        &self,
+        id: &str,
+        edit: impl FnOnce(&mut Collection) -> Result<()>,
+    ) -> Result<Collection> {
+        let _lock = self.lock_file()?;
+        let path = self.base_dir.join("collections").join(format!("{}.json", id));
+        if !path.exists() {
+            return Err(CoreError::CollectionNotFound(id.to_string()));
+        }
+        let mut collection: Collection = serde_json::from_slice(&fs::read(&path)?)?;
+        edit(&mut collection)?;
+        collection.updated_at = chrono::Utc::now();
+        self.atomic_write(&path, &serde_json::to_vec_pretty(&collection)?)?;
+        Ok(collection)
+    }
+
     pub fn delete_collection(&self, id: &str) -> Result<bool> {
         let _lock = self.lock_file()?;
         let path = self.base_dir.join("collections").join(format!("{}.json", id));
         if path.exists() {
+            fs::remove_file(path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn delete_collection_if(
+        &self,
+        id: &str,
+        check: impl FnOnce(&Collection) -> Result<()>,
+    ) -> Result<bool> {
+        let _lock = self.lock_file()?;
+        let path = self.base_dir.join("collections").join(format!("{}.json", id));
+        if path.exists() {
+            let collection = serde_json::from_slice(&fs::read(&path)?)?;
+            check(&collection)?;
             fs::remove_file(path)?;
             Ok(true)
         } else {
@@ -162,10 +196,44 @@ impl StorageManager {
         Ok(())
     }
 
+    pub fn update_environment(
+        &self,
+        id: &str,
+        edit: impl FnOnce(&mut Environment) -> Result<()>,
+    ) -> Result<Environment> {
+        let _lock = self.lock_file()?;
+        let path = self.base_dir.join("environments").join(format!("{}.json", id));
+        if !path.exists() {
+            return Err(CoreError::EnvironmentNotFound(id.to_string()));
+        }
+        let mut environment: Environment = serde_json::from_slice(&fs::read(&path)?)?;
+        edit(&mut environment)?;
+        environment.updated_at = chrono::Utc::now();
+        self.atomic_write(&path, &serde_json::to_vec_pretty(&environment)?)?;
+        Ok(environment)
+    }
+
     pub fn delete_environment(&self, id: &str) -> Result<bool> {
         let _lock = self.lock_file()?;
         let path = self.base_dir.join("environments").join(format!("{}.json", id));
         if path.exists() {
+            fs::remove_file(path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn delete_environment_if(
+        &self,
+        id: &str,
+        check: impl FnOnce(&Environment) -> Result<()>,
+    ) -> Result<bool> {
+        let _lock = self.lock_file()?;
+        let path = self.base_dir.join("environments").join(format!("{}.json", id));
+        if path.exists() {
+            let environment = serde_json::from_slice(&fs::read(&path)?)?;
+            check(&environment)?;
             fs::remove_file(path)?;
             Ok(true)
         } else {
@@ -258,5 +326,27 @@ mod tests {
 
         storage.delete_environment("e1").unwrap();
         assert!(storage.get_environment("e1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_collection_edits_hold_lock_through_read_and_write() {
+        let tmp = tempdir().unwrap();
+        let storage = StorageManager::with_dir(tmp.path()).unwrap();
+        storage.save_collection(&Collection::new("col", "Concurrent")).unwrap();
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let path = tmp.path();
+                scope.spawn(move || {
+                    let storage = StorageManager::with_dir(path).unwrap();
+                    storage.update_collection("col", |collection| {
+                        collection.requests.push(RequestItem::new(
+                            format!("request-{index}"), "Request", HttpMethod::GET, "https://example.com",
+                        ));
+                        Ok(())
+                    }).unwrap();
+                });
+            }
+        });
+        assert_eq!(storage.get_collection("col").unwrap().unwrap().requests.len(), 8);
     }
 }

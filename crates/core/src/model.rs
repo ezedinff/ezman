@@ -53,6 +53,8 @@ pub struct KeyValueItem {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
     pub description: Option<String>,
 }
 
@@ -66,6 +68,7 @@ impl KeyValueItem {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            secret: false,
             description: None,
         }
     }
@@ -162,6 +165,9 @@ impl AuthConfig {
         if sanitized.basic_password.is_some() {
             sanitized.basic_password = Some("[REDACTED]".to_string());
         }
+        if sanitized.basic_username.is_some() {
+            sanitized.basic_username = Some("[REDACTED]".to_string());
+        }
         if sanitized.api_key_value.is_some() {
             sanitized.api_key_value = Some("[REDACTED]".to_string());
         }
@@ -227,6 +233,27 @@ impl RequestItem {
 
     pub fn sanitize_secrets(&self) -> Self {
         let mut sanitized = self.clone();
+        for item in sanitized.params.iter_mut()
+            .chain(&mut sanitized.path_variables)
+            .chain(sanitized.body.url_encoded.iter_mut().flatten())
+        {
+            if item.secret {
+                item.value = "[REDACTED]".to_string();
+            }
+        }
+        for header in &mut sanitized.headers {
+            let name = header.key.to_ascii_lowercase();
+            let auth_header = self.auth.as_ref().is_some_and(|auth| {
+                auth.custom_header_name.as_ref().is_some_and(|key| key.eq_ignore_ascii_case(&name))
+                    || (auth.api_key_in.unwrap_or_default() == ApiKeyLocation::Header
+                        && auth.api_key_name.as_ref().is_some_and(|key| key.eq_ignore_ascii_case(&name)))
+            });
+            if header.secret || matches!(name.as_str(), "authorization" | "proxy-authorization" | "cookie" | "x-api-key" | "api-key")
+                || auth_header
+            {
+                header.value = "[REDACTED]".to_string();
+            }
+        }
         if let Some(auth) = &sanitized.auth {
             sanitized.auth = Some(auth.sanitize_secrets());
         }
@@ -288,6 +315,8 @@ pub struct Collection {
     pub id: String,
     pub name: String,
     #[serde(default)]
+    pub mcp_allow_secrets: bool,
+    #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub variables: Vec<KeyValueItem>,
@@ -307,6 +336,7 @@ impl Collection {
         Self {
             id: id.into(),
             name: name.into(),
+            mcp_allow_secrets: false,
             description: None,
             variables: Vec::new(),
             auth: None,
@@ -319,6 +349,11 @@ impl Collection {
 
     pub fn sanitize_secrets(&self) -> Self {
         let mut sanitized = self.clone();
+        for variable in &mut sanitized.variables {
+            if variable.secret {
+                variable.value = "[REDACTED]".to_string();
+            }
+        }
         if let Some(auth) = &sanitized.auth {
             sanitized.auth = Some(auth.sanitize_secrets());
         }
@@ -366,6 +401,8 @@ pub struct Environment {
     pub id: String,
     pub name: String,
     #[serde(default)]
+    pub mcp_allow_secrets: bool,
+    #[serde(default)]
     pub variables: Vec<EnvironmentVariable>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -377,6 +414,7 @@ impl Environment {
         Self {
             id: id.into(),
             name: name.into(),
+            mcp_allow_secrets: false,
             variables: Vec::new(),
             created_at: now,
             updated_at: now,

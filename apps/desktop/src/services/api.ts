@@ -172,6 +172,7 @@ export const api = {
     const col: Collection = {
       id: parsed.info?._postman_id || String(Date.now()),
       name: parsed.info?.name || 'Imported Collection',
+      mcp_allow_secrets: false,
       description: parsed.info?.description,
       variables: [],
       folders: [],

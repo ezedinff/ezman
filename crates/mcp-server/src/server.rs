@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use ezman_core::{
     detected_variables, path_placeholders, resolve_with_overrides, Environment, Folder, HttpEngine,
-    RequestOverrides, StorageManager,
+    RequestOverrides, StorageManager, VariableResolver,
 };
 use rmcp::{
     model::{
@@ -14,6 +14,7 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::json;
+use crate::secret_access;
 
 #[derive(Clone)]
 pub struct EzmanMcpServer {
@@ -111,7 +112,7 @@ impl EzmanMcpServer {
             "required": ["request_id"]
         });
 
-        vec![
+        let mut tools = vec![
             Tool::new(
                 "list_collections",
                 "List locally available collections and nested folders.",
@@ -130,7 +131,7 @@ impl EzmanMcpServer {
 
             Tool::new(
                 "get_request",
-                "Retrieve saved request details, excluding secret values and credentials.",
+                "Retrieve saved request details. Secrets are hidden unless the user enabled MCP secret access for its collection in the desktop app.",
                 Arc::new(get_request_schema.as_object().unwrap().clone()),
             )
             .with_title("Get Request Details")
@@ -138,7 +139,7 @@ impl EzmanMcpServer {
 
             Tool::new(
                 "list_environments",
-                "List environment names and non-secret metadata. Secret values are redacted.",
+                "List environments. Secret values are hidden unless the user enabled MCP secret access for that environment in the desktop app.",
                 Arc::new(list_environments_schema.as_object().unwrap().clone()),
             )
             .with_title("List Environments")
@@ -151,7 +152,9 @@ impl EzmanMcpServer {
             )
             .with_title("Execute Request")
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
-        ]
+        ];
+        tools.extend(crate::management::tools());
+        tools
     }
 
     pub async fn execute_tool(
@@ -164,21 +167,23 @@ impl EzmanMcpServer {
         match name {
             "list_collections" => {
                 let collections = self.storage.list_collections().map_err(|e| e.to_string())?;
-                let summaries: Vec<CollectionSummary> = collections
+                let summaries: Vec<serde_json::Value> = collections
                     .into_iter()
                     .map(|col| {
                         let folders: Vec<FolderSummary> =
                             col.folders.iter().map(summarize_folder).collect();
-                        CollectionSummary {
-                            id: col.id,
-                            name: col.name,
-                            description: col.description,
+                        let summary = CollectionSummary {
+                            id: col.id.clone(),
+                            name: col.name.clone(),
+                            description: col.description.clone(),
+                            mcp_allow_secrets: col.mcp_allow_secrets,
                             folders_count: col.folders.len(),
                             requests_count: col.requests.len(),
                             folders,
-                        }
+                        };
+                        secret_access::collection_view(&col, summary)
                     })
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 let json = serde_json::to_string_pretty(&summaries).unwrap_or_default();
                 Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
@@ -188,13 +193,14 @@ impl EzmanMcpServer {
                 let filter_folder_id = args.get("folder_id").and_then(|v| v.as_str());
 
                 let collections = self.storage.list_collections().map_err(|e| e.to_string())?;
-                let mut requests = Vec::new();
+                let mut results = Vec::new();
                 for col in &collections {
                     if let Some(c_id) = filter_col_id {
                         if col.id != c_id {
                             continue;
                         }
                     }
+                    let mut requests = Vec::new();
 
                     if filter_folder_id.is_none() {
                         for req in &col.requests {
@@ -223,8 +229,10 @@ impl EzmanMcpServer {
                             &mut requests,
                         );
                     }
+                    let visible = secret_access::collection_view(col, &requests)?;
+                    results.extend(visible.as_array().unwrap().iter().cloned());
                 }
-                let json = serde_json::to_string_pretty(&requests).unwrap_or_default();
+                let json = serde_json::to_string_pretty(&results).unwrap_or_default();
                 Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
 
@@ -237,15 +245,16 @@ impl EzmanMcpServer {
                 let found = self.storage.find_request(req_id).map_err(|e| e.to_string())?;
                 match found {
                     Some((col, req)) => {
-                        let sanitized_req = req.sanitize_secrets();
                         let result = json!({
                             "collection_id": col.id,
                             "collection_name": col.name,
+                            "mcp_allow_secrets": col.mcp_allow_secrets,
                             "detected_variables": detected_variables(&req),
                             "path_placeholders": path_placeholders(&req.url),
-                            "request": sanitized_req,
+                            "request": req,
                         });
-                        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
+                        let visible = secret_access::collection_view(&col, result)?;
+                        let json = serde_json::to_string_pretty(&visible).unwrap_or_default();
                         Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
                     }
                     None => Err(format!("Request with ID '{}' not found", req_id)),
@@ -254,10 +263,10 @@ impl EzmanMcpServer {
 
             "list_environments" => {
                 let environments = self.storage.list_environments().map_err(|e| e.to_string())?;
-                let sanitized: Vec<Environment> = environments
-                    .into_iter()
-                    .map(|env| env.sanitize_secrets())
-                    .collect();
+                let sanitized: Vec<serde_json::Value> = environments
+                    .iter()
+                    .map(secret_access::environment_view)
+                    .collect::<Result<_, _>>()?;
                 let json = serde_json::to_string_pretty(&sanitized).unwrap_or_default();
                 Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
@@ -312,41 +321,49 @@ impl EzmanMcpServer {
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("Request with ID '{}' not found", req_id))?;
 
-                let overrides = RequestOverrides::from_args(&args).map_err(|e| e.to_string())?;
+                let mut secrets = Vec::new();
+                if !collection.mcp_allow_secrets {
+                    secrets.extend(secret_access::collection_secrets(&collection));
+                }
+                if let Some(environment) = &selected_env {
+                    if !environment.mcp_allow_secrets {
+                        secrets.extend(secret_access::environment_secrets(environment));
+                    }
+                }
+                let overrides = RequestOverrides::from_args(&args)
+                    .map_err(|e| secret_access::redact_text(&e.to_string(), &secrets))?;
+                let mut resolver = VariableResolver::from_collection_and_environment(
+                    Some(&collection), selected_env.as_ref(),
+                );
+                for (key, value) in &overrides.variables {
+                    resolver.insert(key.clone(), value.clone());
+                }
+                let resolved_secrets: Vec<_> = secrets.iter().map(|secret| resolver.resolve_string(secret)).collect();
+                secrets.extend(resolved_secrets);
                 let overridden = resolve_with_overrides(
                     Some(&collection),
                     selected_env.as_ref(),
                     &request,
                     &overrides,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| secret_access::redact_text(&e.to_string(), &secrets))?;
                 let resolved_request = overridden.request;
+                if !collection.mcp_allow_secrets {
+                    secrets.extend(secret_access::request_secrets(&resolved_request, collection.auth.as_ref()));
+                }
 
                 let response = self
                     .http_engine
                     .execute(&resolved_request, collection.auth.as_ref())
                     .await;
 
-                // Never echo secret environment values back to the agent.
-                let secrets: Vec<&str> = selected_env
-                    .iter()
-                    .flat_map(|e| e.variables.iter())
-                    .filter(|v| v.enabled && v.secret && !v.value.is_empty())
-                    .map(|v| v.value.as_str())
-                    .collect();
-                let redact = |text: &str| {
-                    secrets
-                        .iter()
-                        .fold(text.to_string(), |acc, s| acc.replace(s, "[REDACTED]"))
-                };
-
-                let output = json!({
+                let mut output = json!({
                     "request": {
                         "id": request.id,
                         "name": request.name,
                         "method": request.method.as_str(),
-                        "url": redact(&resolved_request.url),
-                        "resolved_url": redact(&resolved_request.url),
+                        "url": resolved_request.url,
+                        "resolved_url": resolved_request.url,
                         "is_mutating": request.method.is_mutating(),
                         "environment": selected_env.as_ref().map(|e| e.name.as_str()).unwrap_or("none"),
                         "overrides_applied": overridden.applied,
@@ -359,15 +376,16 @@ impl EzmanMcpServer {
                         "size_bytes": response.size_bytes,
                         "headers": response.headers,
                         "body": response.body,
-                        "error": response.error.as_deref().map(|e| redact(e)),
+                        "error": response.error,
                     }
                 });
+                secret_access::redact(&mut output, &secrets);
 
                 let json = serde_json::to_string_pretty(&output).unwrap_or_default();
                 Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
 
-            unknown => Err(format!("Unknown tool: {}", unknown)),
+            other => crate::management::execute(&self.storage, other, args),
         }
     }
 }
@@ -377,6 +395,7 @@ struct CollectionSummary {
     id: String,
     name: String,
     description: Option<String>,
+    mcp_allow_secrets: bool,
     folders_count: usize,
     requests_count: usize,
     folders: Vec<FolderSummary>,

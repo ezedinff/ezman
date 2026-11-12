@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Check, Eye, EyeOff } from 'lucide-react';
+import { X, Plus, Trash2, Check, Eye, EyeOff, Lock } from 'lucide-react';
 import { ApiKeyLocation, AuthConfig, AuthType, Collection, KeyValueItem } from '../types';
 
 interface CollectionVariablesModalProps {
@@ -20,8 +20,9 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
   const [activeTab, setActiveTab] = useState<'variables' | 'auth'>('variables');
   const [editingCol, setEditingCol] = useState<Collection>(JSON.parse(JSON.stringify(collection)));
   const [showPassword, setShowPassword] = useState(false);
+  const [showSecrets, setShowSecrets] = useState<Record<number, boolean>>({});
 
-  const updateVariable = (idx: number, field: keyof KeyValueItem, val: any) => {
+  const updateVariable = <K extends keyof KeyValueItem,>(idx: number, field: K, val: KeyValueItem[K]) => {
     const vars = [...editingCol.variables];
     vars[idx] = { ...vars[idx], [field]: val };
     setEditingCol({ ...editingCol, variables: vars });
@@ -30,11 +31,12 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
   const addVariable = () => {
     setEditingCol({
       ...editingCol,
-      variables: [...editingCol.variables, { key: '', value: '', enabled: true }],
+      variables: [...editingCol.variables, { key: '', value: '', enabled: true, secret: false }],
     });
   };
 
   const deleteVariable = (idx: number) => {
+    setShowSecrets({});
     setEditingCol({
       ...editingCol,
       variables: editingCol.variables.filter((_, i) => i !== idx),
@@ -100,6 +102,20 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
 
         {/* Body content */}
         <div className="flex-1 overflow-y-auto p-4 text-xs bg-[#181a20]">
+          <label className="flex items-start gap-2 rounded border border-gray-800 bg-[#13151a] p-2 mb-4 text-gray-300">
+            <input
+              type="checkbox"
+              checked={editingCol.mcp_allow_secrets ?? false}
+              onChange={(e) => setEditingCol({ ...editingCol, mcp_allow_secrets: e.target.checked })}
+              className="mt-0.5 rounded border-gray-700 bg-gray-800 text-blue-600 focus:ring-0"
+            />
+            <span>
+              Allow MCP secret access
+              <span className="block text-[11px] text-gray-500 mt-1">
+                Agents can read and change credentials and secret variables across this collection, including nested folders and requests. Off by default; saved requests can still use secrets.
+              </span>
+            </span>
+          </label>
           {activeTab === 'variables' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-gray-400 text-[11px]">
@@ -120,6 +136,7 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
                       <th className="w-8 py-1.5 px-2 text-center"></th>
                       <th className="py-1.5 px-3">Variable Name</th>
                       <th className="py-1.5 px-3">Value</th>
+                      <th className="w-14 py-1.5 px-2 text-center">Secret</th>
                       <th className="w-8 py-1.5 px-2"></th>
                     </tr>
                   </thead>
@@ -144,13 +161,35 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
                           />
                         </td>
                         <td className="py-1 px-3">
-                          <input
-                            type="text"
-                            value={v.value}
-                            onChange={(e) => updateVariable(idx, 'value', e.target.value)}
-                            placeholder="value"
-                            className="w-full bg-transparent text-gray-200 outline-none placeholder-gray-600"
-                          />
+                          <div className="flex items-center gap-1">
+                            <input
+                              type={v.secret && !showSecrets[idx] ? 'password' : 'text'}
+                              value={v.value}
+                              onChange={(e) => updateVariable(idx, 'value', e.target.value)}
+                              placeholder="value"
+                              className="w-full min-w-0 bg-transparent text-gray-200 outline-none placeholder-gray-600"
+                            />
+                            {v.secret && (
+                              <button
+                                type="button"
+                                title={showSecrets[idx] ? 'Hide secret' : 'Reveal secret'}
+                                onClick={() => setShowSecrets((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                                className="text-gray-500 hover:text-gray-300"
+                              >
+                                {showSecrets[idx] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-1 px-2 text-center">
+                          <button
+                            type="button"
+                            title={v.secret ? 'Marked as Secret' : 'Not Secret'}
+                            onClick={() => updateVariable(idx, 'secret', !v.secret)}
+                            className={`p-1 rounded ${v.secret ? 'text-amber-400 bg-amber-950/60' : 'text-gray-600 hover:text-gray-400'}`}
+                          >
+                            <Lock className="w-3 h-3" />
+                          </button>
                         </td>
                         <td className="py-1 px-2 text-center">
                           <button
@@ -164,7 +203,7 @@ export const CollectionVariablesModal: React.FC<CollectionVariablesModalProps> =
                     ))}
                     {editingCol.variables.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="py-4 text-center text-gray-500 font-sans text-xs">
+                        <td colSpan={5} className="py-4 text-center text-gray-500 font-sans text-xs">
                           No collection variables yet.
                         </td>
                       </tr>

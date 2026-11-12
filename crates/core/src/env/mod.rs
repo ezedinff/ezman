@@ -90,6 +90,7 @@ impl VariableResolver {
                 key: self.resolve_string(&item.key),
                 value: self.resolve_string(&item.value),
                 enabled: item.enabled,
+                secret: item.secret,
                 description: item.description.clone(),
             })
             .collect()
