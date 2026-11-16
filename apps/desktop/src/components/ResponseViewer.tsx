@@ -10,6 +10,7 @@ import {
   Maximize2,
   Minimize2,
   PanelRightClose,
+  PanelBottomClose,
   X,
   BookmarkPlus,
   Trash2,
@@ -24,6 +25,7 @@ export interface ResponseViewerProps {
   scriptLogs?: ScriptLogEntry[];
   loading?: boolean;
   layoutMode?: 'split' | 'maximized' | 'collapsed';
+  position?: 'right' | 'bottom';
   onToggleMaximize?: () => void;
   onToggleCollapse?: () => void;
   onSaveResponse?: (name: string) => void;
@@ -49,6 +51,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
   scriptLogs = [],
   loading,
   layoutMode = 'split',
+  position = 'right',
   onToggleMaximize,
   onToggleCollapse,
   onSaveResponse,
@@ -242,7 +245,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
   return (
     <div
       id="response-viewer-container"
-      className="flex-1 flex flex-col bg-[#15171d] border-l border-gray-800 overflow-hidden select-none h-full"
+      className="flex-1 min-h-0 flex flex-col bg-[#15171d] overflow-hidden select-none h-full"
     >
       {/* Top Response Info Bar */}
       <div className="p-2.5 border-b border-gray-800 flex items-center justify-between bg-[#16181e] gap-2">
@@ -401,7 +404,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
           {onToggleMaximize && (
             <button
               onClick={onToggleMaximize}
-              title={layoutMode === 'maximized' ? 'Restore Split View' : 'Maximize Response (Full Width)'}
+              title={layoutMode === 'maximized' ? 'Restore Split View' : 'Maximize Response Panel'}
               className={`p-1.5 rounded border transition-colors ${
                 layoutMode === 'maximized'
                   ? 'bg-blue-600/30 text-blue-300 border-blue-500'
@@ -418,7 +421,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
               title="Collapse Response Panel"
               className="p-1.5 rounded border bg-gray-800/80 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border-gray-700 transition-colors"
             >
-              <PanelRightClose className="w-3.5 h-3.5" />
+              {position === 'bottom' ? <PanelBottomClose className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
             </button>
           )}
         </div>

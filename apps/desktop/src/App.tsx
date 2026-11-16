@@ -25,7 +25,7 @@ import {
 } from './types';
 import { api } from './services/api';
 import { runScript } from './services/scriptRunner';
-import { Send, Plus, Upload, PanelRightOpen } from 'lucide-react';
+import { Send, Plus, Upload, PanelRightOpen, PanelBottomOpen, Columns2, Rows2 } from 'lucide-react';
 
 /** Auto-close unused tabs after this much idle time. */
 const TAB_INACTIVITY_MS = 5 * 60 * 60 * 1000;
@@ -153,6 +153,13 @@ export const App: React.FC = () => {
   const [splitRatio, setSplitRatio] = useState(() =>
     Number(localStorage.getItem('ezman.splitRatio')) || 50
   );
+  const [responseOrientation, setResponseOrientation] = useState<'side-by-side' | 'stacked'>(() =>
+    localStorage.getItem('ezman.responseOrientation') === 'stacked' ? 'stacked' : 'side-by-side'
+  );
+  const [stackedSplitRatio, setStackedSplitRatio] = useState(() =>
+    Math.min(80, Math.max(20, Number(localStorage.getItem('ezman.stackedSplitRatio')) || 50))
+  );
+  const isStacked = responseOrientation === 'stacked';
   const splitRef = useRef<HTMLDivElement>(null);
   const sessionReadyRef = useRef(false);
   const tabsRef = useRef(tabs);
@@ -170,6 +177,8 @@ export const App: React.FC = () => {
   }, [collections]);
   useEffect(() => localStorage.setItem('ezman.sidebarWidth', String(sidebarWidth)), [sidebarWidth]);
   useEffect(() => localStorage.setItem('ezman.splitRatio', String(splitRatio)), [splitRatio]);
+  useEffect(() => localStorage.setItem('ezman.responseOrientation', responseOrientation), [responseOrientation]);
+  useEffect(() => localStorage.setItem('ezman.stackedSplitRatio', String(stackedSplitRatio)), [stackedSplitRatio]);
   const [responseLayout, setResponseLayout] = useState<'split' | 'maximized' | 'collapsed'>('split');
 
   // Modals state
@@ -1147,28 +1156,64 @@ export const App: React.FC = () => {
         />
 
         {/* Workspace Central & Right panels */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-[#181a20]">
+        <main className="flex-1 min-w-0 flex flex-col overflow-hidden bg-[#181a20]">
           {/* Tab Bar */}
-          <TabBar
-            tabs={tabs}
-            activeTabId={activeTabId}
-            onSelectTab={handleSelectTab}
-            onCloseTab={handleCloseTab}
-            onNewTab={handleNewTab}
-            onTogglePin={handleTogglePin}
-            onCloseOthers={handleCloseOthers}
-            onCloseToRight={handleCloseToRight}
-            onCloseToLeft={handleCloseToLeft}
-            onCloseAll={handleCloseAll}
-          />
+          <div className="flex flex-shrink-0 min-w-0">
+            <div className="flex-1 min-w-0">
+              <TabBar
+                tabs={tabs}
+                activeTabId={activeTabId}
+                onSelectTab={handleSelectTab}
+                onCloseTab={handleCloseTab}
+                onNewTab={handleNewTab}
+                onTogglePin={handleTogglePin}
+                onCloseOthers={handleCloseOthers}
+                onCloseToRight={handleCloseToRight}
+                onCloseToLeft={handleCloseToLeft}
+                onCloseAll={handleCloseAll}
+              />
+            </div>
+            <div
+              role="group"
+              aria-label="Request and response layout"
+              className="flex items-center gap-1 px-2 bg-[#14161b] border-b border-l border-gray-800"
+            >
+              <button
+                type="button"
+                aria-label="Stacked layout"
+                aria-pressed={isStacked}
+                title="Stacked layout: response below request"
+                onClick={() => setResponseOrientation('stacked')}
+                className={`p-1 rounded transition-colors ${
+                  isStacked ? 'bg-blue-600/20 text-blue-400' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'
+                }`}
+              >
+                <Rows2 className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                aria-label="Side-by-side layout"
+                aria-pressed={!isStacked}
+                title="Side-by-side layout: response beside request"
+                onClick={() => setResponseOrientation('side-by-side')}
+                className={`p-1 rounded transition-colors ${
+                  !isStacked ? 'bg-blue-600/20 text-blue-400' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'
+                }`}
+              >
+                <Columns2 className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
 
           {/* Split Pane: Request Editor & Response Viewer */}
           {activeTab ? (
-            <div ref={splitRef} className="flex-1 flex overflow-hidden">
+            <div ref={splitRef} className={`flex-1 min-h-0 flex overflow-hidden ${isStacked ? 'flex-col' : ''}`}>
               {/* Request Editor Pane */}
               <div
-                style={responseLayout === 'split' ? { width: `${splitRatio}%` } : undefined}
-                className={`flex flex-col border-r border-gray-800 overflow-hidden ${
+                style={responseLayout === 'split' ? { flexBasis: `${isStacked ? stackedSplitRatio : splitRatio}%` } : undefined}
+                className={`flex flex-col min-w-0 min-h-0 border-gray-800 overflow-hidden ${
+                  isStacked ? 'border-b' : 'border-r'
+                } ${
                   responseLayout === 'maximized'
                     ? 'hidden'
                     : responseLayout === 'collapsed'
@@ -1188,22 +1233,27 @@ export const App: React.FC = () => {
               {/* Response Viewer Pane */}
               {responseLayout === 'collapsed' ? (
                 /* Slim Collapsed Rail */
-                <div
+                <button
+                  type="button"
                   onClick={() => setResponseLayout('split')}
                   title="Expand Response Panel"
-                  className="w-10 bg-[#14161b] hover:bg-[#181a20] border-l border-gray-800 flex flex-col items-center py-3 cursor-pointer select-none transition-colors group"
+                  aria-label="Expand response panel"
+                  className={`flex-shrink-0 bg-[#14161b] hover:bg-[#181a20] border-gray-800 flex items-center select-none transition-colors group ${
+                    isStacked ? 'h-10 border-t px-3 gap-3' : 'w-10 border-l flex-col py-3'
+                  }`}
                 >
-                  <button
-                    className="p-1.5 rounded text-gray-400 group-hover:text-blue-400 hover:bg-gray-800 transition-colors mb-4"
-                    title="Expand Response"
+                  <span
+                    className={`p-1.5 rounded text-gray-400 group-hover:text-blue-400 transition-colors ${isStacked ? '' : 'mb-4'}`}
                   >
-                    <PanelRightOpen className="w-4 h-4" />
-                  </button>
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-gray-500 group-hover:text-gray-300 transform -rotate-90 whitespace-nowrap mt-8">
+                    {isStacked ? <PanelBottomOpen className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+                  </span>
+                  <span className={`text-[10px] font-mono uppercase tracking-widest text-gray-500 group-hover:text-gray-300 whitespace-nowrap ${
+                    isStacked ? '' : 'transform -rotate-90 mt-8'
+                  }`}>
                     Response
                   </span>
                   {activeTab.response && (
-                    <div className="mt-auto flex flex-col items-center space-y-1">
+                    <span className={`flex items-center ${isStacked ? 'ml-auto' : 'mt-auto flex-col space-y-1'}`}>
                       <span
                         className={`text-[9px] font-mono font-bold px-1 py-0.5 rounded ${
                           activeTab.response.status >= 200 && activeTab.response.status < 300
@@ -1213,28 +1263,34 @@ export const App: React.FC = () => {
                       >
                         {activeTab.response.status}
                       </span>
-                    </div>
+                    </span>
                   )}
-                </div>
+                </button>
               ) : (
                 <>
                 {responseLayout === 'split' && (
                   <ResizeHandle
-                    onDrag={(x) => {
+                    orientation={isStacked ? 'horizontal' : 'vertical'}
+                    onDrag={(position) => {
                       const r = splitRef.current?.getBoundingClientRect();
                       if (!r) return;
-                      setSplitRatio(Math.min(80, Math.max(20, ((x - r.left) / r.width) * 100)));
+                      const size = isStacked ? r.height : r.width;
+                      if (size <= 0) return;
+                      const ratio = Math.min(80, Math.max(20, ((position - (isStacked ? r.top : r.left)) / size) * 100));
+                      if (isStacked) setStackedSplitRatio(ratio);
+                      else setSplitRatio(ratio);
                     }}
-                    onDoubleClick={() => setSplitRatio(50)}
+                    onDoubleClick={() => isStacked ? setStackedSplitRatio(50) : setSplitRatio(50)}
                   />
                 )}
-                <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                   <ResponseViewer
                     response={activeTab.response}
                     savedResponses={activeTab.request.responses || []}
                     scriptLogs={activeTab.script_logs}
                     loading={activeTab.loading}
                     layoutMode={responseLayout}
+                    position={isStacked ? 'bottom' : 'right'}
                     onToggleMaximize={() =>
                       setResponseLayout(responseLayout === 'maximized' ? 'split' : 'maximized')
                     }
