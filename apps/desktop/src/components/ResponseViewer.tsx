@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Copy,
   Check,
@@ -11,40 +11,101 @@ import {
   Minimize2,
   PanelRightClose,
   X,
+  BookmarkPlus,
+  Trash2,
 } from 'lucide-react';
 import type * as monaco from 'monaco-editor';
-import { HttpResponse, ScriptLogEntry } from '../types';
+import { HttpResponse, SavedResponse, ScriptLogEntry } from '../types';
 import { CodeEditor } from './CodeEditor';
 
 export interface ResponseViewerProps {
   response?: HttpResponse;
+  savedResponses?: SavedResponse[];
   scriptLogs?: ScriptLogEntry[];
   loading?: boolean;
   layoutMode?: 'split' | 'maximized' | 'collapsed';
   onToggleMaximize?: () => void;
   onToggleCollapse?: () => void;
+  onSaveResponse?: (name: string) => void;
+  onDeleteResponse?: (id: string) => void;
+}
+
+type ViewSource = 'live' | string; // 'live' or saved response id
+
+function savedToHttp(saved: SavedResponse): HttpResponse {
+  return {
+    status: saved.status,
+    status_text: saved.status_text,
+    headers: saved.headers,
+    body: saved.body,
+    duration_ms: 0,
+    size_bytes: new TextEncoder().encode(saved.body).length,
+  };
 }
 
 export const ResponseViewer: React.FC<ResponseViewerProps> = ({
   response,
+  savedResponses = [],
   scriptLogs = [],
   loading,
   layoutMode = 'split',
   onToggleMaximize,
   onToggleCollapse,
+  onSaveResponse,
+  onDeleteResponse,
 }) => {
   const [activeTab, setActiveTab] = useState<'body' | 'headers' | 'console'>('body');
   const [viewMode, setViewMode] = useState<'pretty' | 'raw'>('pretty');
   const [copied, setCopied] = useState(false);
   const [headerSearchOpen, setHeaderSearchOpen] = useState(false);
   const [headerSearchQuery, setHeaderSearchQuery] = useState('');
+  const [viewSource, setViewSource] = useState<ViewSource>('live');
+  const [naming, setNaming] = useState(false);
+  const [exampleName, setExampleName] = useState('');
 
-  // Editor reference for native Monaco actions (like Find)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Prefer live response when a new one arrives.
+  useEffect(() => {
+    if (response) setViewSource('live');
+  }, [response]);
+
+  // With no live response, default to the first saved example.
+  useEffect(() => {
+    if (response || savedResponses.length === 0) return;
+    setViewSource((prev) =>
+      prev !== 'live' && savedResponses.some((r) => r.id === prev)
+        ? prev
+        : savedResponses[0].id
+    );
+  }, [response, savedResponses]);
+
+  // Drop selection if the saved example was deleted.
+  useEffect(() => {
+    if (viewSource === 'live') return;
+    if (!savedResponses.some((r) => r.id === viewSource)) {
+      setViewSource(response ? 'live' : savedResponses[0]?.id ?? 'live');
+    }
+  }, [savedResponses, viewSource, response]);
+
+  useEffect(() => {
+    if (naming) {
+      nameInputRef.current?.focus();
+      nameInputRef.current?.select();
+    }
+  }, [naming]);
+
+  const selectedSaved =
+    viewSource !== 'live' ? savedResponses.find((r) => r.id === viewSource) : undefined;
+  const displayResponse: HttpResponse | undefined = selectedSaved
+    ? savedToHttp(selectedSaved)
+    : response;
+  const viewingExample = !!selectedSaved;
 
   const handleCopyBody = () => {
-    if (!response?.body) return;
-    navigator.clipboard.writeText(response.body);
+    if (!displayResponse?.body) return;
+    navigator.clipboard.writeText(displayResponse.body);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -56,6 +117,21 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
     } else {
       setHeaderSearchOpen((prev) => !prev);
     }
+  };
+
+  const startSave = () => {
+    if (!response || response.error || !onSaveResponse) return;
+    const defaultName = `${response.status} ${response.status_text || 'Response'}`.trim();
+    setExampleName(defaultName);
+    setNaming(true);
+  };
+
+  const confirmSave = () => {
+    const name = exampleName.trim();
+    if (!name || !onSaveResponse) return;
+    onSaveResponse(name);
+    setNaming(false);
+    setExampleName('');
   };
 
   const formatSize = (bytes: number): string => {
@@ -108,15 +184,6 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
     return 'plaintext';
   };
 
-  const { formatted: prettyBody, isJson } = formatBody(response?.body || '');
-  const displayBody = viewMode === 'pretty' && isJson ? prettyBody : (response?.body || '');
-  const detectedLanguage =
-    viewMode === 'raw'
-      ? 'plaintext'
-      : isJson
-        ? 'json'
-        : detectLanguage(response?.headers || [], response?.body || '');
-
   if (loading) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-[#15171d] text-gray-400 p-8 select-none">
@@ -127,7 +194,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
     );
   }
 
-  if (!response) {
+  if (!displayResponse) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-[#15171d] text-gray-500 p-8 select-none">
         <div className="w-12 h-12 rounded-xl bg-gray-800/40 border border-gray-700/50 flex items-center justify-center mb-3">
@@ -137,11 +204,36 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
         <p className="text-[11px] text-gray-500 mt-1 max-w-xs text-center">
           Click 'Send' or press <span className="font-mono text-gray-400 bg-gray-800 px-1 py-0.5 rounded">⌘ Enter</span> to execute the request.
         </p>
+        {savedResponses.length > 0 && (
+          <div className="mt-4 flex flex-col items-center gap-2">
+            <span className="text-[11px] text-gray-400">Saved examples</span>
+            <div className="flex flex-wrap justify-center gap-1.5 max-w-sm">
+              {savedResponses.map((ex) => (
+                <button
+                  key={ex.id}
+                  onClick={() => setViewSource(ex.id)}
+                  className="px-2 py-1 rounded border border-gray-700 bg-gray-800/80 text-[11px] text-gray-300 hover:text-white hover:border-gray-500"
+                >
+                  {ex.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
-  const filteredHeaders = response.headers.filter(([k, v]) => {
+  const { formatted: prettyBody, isJson } = formatBody(displayResponse.body || '');
+  const displayBody = viewMode === 'pretty' && isJson ? prettyBody : displayResponse.body || '';
+  const detectedLanguage =
+    viewMode === 'raw'
+      ? 'plaintext'
+      : isJson
+        ? 'json'
+        : detectLanguage(displayResponse.headers || [], displayResponse.body || '');
+
+  const filteredHeaders = displayResponse.headers.filter(([k, v]) => {
     if (!headerSearchQuery.trim()) return true;
     const q = headerSearchQuery.toLowerCase();
     return k.toLowerCase().includes(q) || v.toLowerCase().includes(q);
@@ -153,33 +245,117 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
       className="flex-1 flex flex-col bg-[#15171d] border-l border-gray-800 overflow-hidden select-none h-full"
     >
       {/* Top Response Info Bar */}
-      <div className="p-2.5 border-b border-gray-800 flex items-center justify-between bg-[#16181e]">
-        <div className="flex items-center space-x-3 text-xs">
-          {/* Status Badge */}
+      <div className="p-2.5 border-b border-gray-800 flex items-center justify-between bg-[#16181e] gap-2">
+        <div className="flex items-center space-x-3 text-xs min-w-0">
           <span
-            className={`font-mono text-xs font-bold px-2 py-0.5 rounded border ${getStatusColor(
-              response.status
+            className={`font-mono text-xs font-bold px-2 py-0.5 rounded border flex-shrink-0 ${getStatusColor(
+              displayResponse.status
             )}`}
           >
-            {response.status} {response.status_text}
+            {displayResponse.status} {displayResponse.status_text}
           </span>
 
-          {/* Time Badge */}
-          <span className="flex items-center space-x-1 text-gray-400 text-[11px] font-mono">
-            <Clock className="w-3 h-3 text-gray-500" />
-            <span>{response.duration_ms} ms</span>
-          </span>
+          {viewingExample ? (
+            <span className="flex items-center space-x-1 text-amber-400/90 text-[11px] font-medium flex-shrink-0">
+              Example
+            </span>
+          ) : (
+            <>
+              <span className="flex items-center space-x-1 text-gray-400 text-[11px] font-mono flex-shrink-0">
+                <Clock className="w-3 h-3 text-gray-500" />
+                <span>{displayResponse.duration_ms} ms</span>
+              </span>
+              <span className="flex items-center space-x-1 text-gray-400 text-[11px] font-mono flex-shrink-0">
+                <Database className="w-3 h-3 text-gray-500" />
+                <span>{formatSize(displayResponse.size_bytes)}</span>
+              </span>
+            </>
+          )}
 
-          {/* Size Badge */}
-          <span className="flex items-center space-x-1 text-gray-400 text-[11px] font-mono">
-            <Database className="w-3 h-3 text-gray-500" />
-            <span>{formatSize(response.size_bytes)}</span>
-          </span>
+          {(response || savedResponses.length > 0) && (
+            <select
+              value={viewSource}
+              onChange={(e) => setViewSource(e.target.value as ViewSource)}
+              className="max-w-[160px] bg-[#1e2129] border border-gray-700/60 text-gray-300 text-[11px] rounded px-1.5 py-1 outline-none hover:border-gray-600"
+              title="View live or saved response"
+            >
+              <option value="live" disabled={!response}>
+                {response ? 'Latest response' : 'Latest (none)'}
+              </option>
+              {savedResponses.map((ex) => (
+                <option key={ex.id} value={ex.id}>
+                  {ex.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
-        {/* Action Controls */}
-        <div className="flex items-center space-x-1.5">
-          {/* Native Search Trigger */}
+        <div className="flex items-center space-x-1.5 flex-shrink-0">
+          {naming ? (
+            <form
+              className="flex items-center gap-1"
+              onSubmit={(e) => {
+                e.preventDefault();
+                confirmSave();
+              }}
+            >
+              <input
+                ref={nameInputRef}
+                value={exampleName}
+                onChange={(e) => setExampleName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setNaming(false);
+                    setExampleName('');
+                  }
+                }}
+                placeholder="Example name"
+                className="w-36 bg-[#1e2129] border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-200 outline-none focus:border-blue-500"
+              />
+              <button
+                type="submit"
+                disabled={!exampleName.trim()}
+                className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[11px]"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNaming(false);
+                  setExampleName('');
+                }}
+                className="p-1 text-gray-400 hover:text-gray-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </form>
+          ) : (
+            <>
+              {!viewingExample && response && !response.error && onSaveResponse && (
+                <button
+                  onClick={startSave}
+                  title="Save response as example"
+                  className="flex items-center space-x-1 bg-gray-800/80 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 text-[11px] transition-colors"
+                >
+                  <BookmarkPlus className="w-3 h-3" />
+                  <span>Save</span>
+                </button>
+              )}
+              {viewingExample && onDeleteResponse && selectedSaved && (
+                <button
+                  onClick={() => onDeleteResponse(selectedSaved.id)}
+                  title="Delete saved example"
+                  className="flex items-center space-x-1 bg-gray-800/80 hover:bg-rose-950/60 text-gray-300 hover:text-rose-300 px-2 py-1 rounded border border-gray-700 hover:border-rose-800 text-[11px] transition-colors"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Delete</span>
+                </button>
+              )}
+            </>
+          )}
+
           <button
             onClick={handleTriggerFind}
             title={activeTab === 'body' ? 'Find in response (⌘F / Ctrl+F)' : 'Filter headers'}
@@ -188,12 +364,10 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
             <Search className="w-3.5 h-3.5" />
           </button>
 
-          {/* Language Badge */}
           <span className="px-1.5 py-0.5 rounded bg-gray-800/90 border border-gray-700/60 text-[10px] font-mono font-medium text-gray-400 uppercase">
             {detectedLanguage}
           </span>
 
-          {/* Pretty / Raw toggle (if JSON) */}
           {isJson && (
             <div className="flex items-center bg-[#1e2129] border border-gray-700/60 rounded p-0.5 text-[11px]">
               <button
@@ -215,8 +389,6 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
             </div>
           )}
 
-
-          {/* Copy Button */}
           <button
             onClick={handleCopyBody}
             title="Copy Response Body"
@@ -226,7 +398,6 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
             <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
 
-          {/* Panel Layout Controls: Maximize / Restore / Collapse */}
           {onToggleMaximize && (
             <button
               onClick={onToggleMaximize}
@@ -253,18 +424,16 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
         </div>
       </div>
 
-      {/* Error banner if network error */}
-      {response.error && (
+      {displayResponse.error && (
         <div className="m-3 p-3 bg-rose-950/40 border border-rose-800 text-rose-300 rounded text-xs flex items-start space-x-2">
           <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
             <p className="font-semibold text-rose-200">Execution Error</p>
-            <p className="text-[11px] font-mono mt-0.5 leading-relaxed">{response.error}</p>
+            <p className="text-[11px] font-mono mt-0.5 leading-relaxed">{displayResponse.error}</p>
           </div>
         </div>
       )}
 
-      {/* Subtabs Bar */}
       <div className="flex items-center justify-between border-b border-gray-800 bg-[#13151a] px-3 pt-1 text-xs">
         <div className="flex items-center space-x-1">
           <button
@@ -288,11 +457,11 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
           >
             <span>Headers</span>
             <span className="px-1.5 py-0.2 rounded-full bg-gray-800 text-[10px] text-gray-400 font-mono">
-              {response.headers.length}
+              {displayResponse.headers.length}
             </span>
           </button>
 
-          {scriptLogs.length > 0 && (
+          {!viewingExample && scriptLogs.length > 0 && (
             <button
               onClick={() => setActiveTab('console')}
               className={`px-3 py-1.5 font-medium border-b-2 transition-colors flex items-center space-x-1.5 ${
@@ -316,13 +485,12 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
         </div>
       </div>
 
-      {/* Content Area — avoid select-none here so Monaco fold gutters stay clickable */}
       <div className="flex-1 overflow-hidden p-3 text-xs flex flex-col min-h-0 select-text">
-        {(activeTab === 'body' || (activeTab === 'console' && scriptLogs.length === 0)) && (
+        {(activeTab === 'body' || (activeTab === 'console' && (viewingExample || scriptLogs.length === 0))) && (
           <div className="h-full flex-1 min-h-0">
-            {response.body ? (
+            {displayResponse.body ? (
               <CodeEditor
-                key={`response-body-${viewMode}-${detectedLanguage}`}
+                key={`response-body-${viewSource}-${viewMode}-${detectedLanguage}`}
                 value={displayBody}
                 language={detectedLanguage}
                 path={`ezman-response.${detectedLanguage === 'json' ? 'json' : detectedLanguage}`}
@@ -341,7 +509,7 @@ export const ResponseViewer: React.FC<ResponseViewerProps> = ({
           </div>
         )}
 
-        {activeTab === 'console' && (
+        {activeTab === 'console' && !viewingExample && (
           <div className="h-full overflow-y-auto font-mono text-[11px] space-y-0.5">
             {scriptLogs.map((l, i) => (
               <div

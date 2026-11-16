@@ -44,6 +44,17 @@ export interface ScriptLogEntry {
   message: string;
 }
 
+/** Named snapshot of an HTTP response stored with a request (Postman-style example). */
+export interface SavedResponse {
+  id: string;
+  name: string;
+  status: number;
+  status_text: string;
+  headers: [string, string][];
+  body: string;
+  created_at: string;
+}
+
 export interface RequestItem {
   id: string;
   name: string;
@@ -56,6 +67,8 @@ export interface RequestItem {
   auth?: AuthConfig;
   body: RequestBodyConfig;
   scripts?: RequestScripts;
+  /** Saved example responses for this request. */
+  responses?: SavedResponse[];
   created_at: string;
   updated_at: string;
 }
@@ -124,6 +137,10 @@ export interface TabItem {
   request: RequestItem;
   collection_id?: string;
   is_dirty: boolean;
+  /** When true, tab stays left and is skipped by bulk close actions. */
+  pinned?: boolean;
+  /** Epoch ms of last user activity on this tab (select/edit/send). */
+  last_active_at?: number;
   response?: HttpResponse;
   loading?: boolean;
   script_logs?: ScriptLogEntry[];

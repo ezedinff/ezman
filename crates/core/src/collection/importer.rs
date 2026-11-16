@@ -4,8 +4,9 @@ use crate::error::{CoreError, Result};
 use crate::model::{
     ApiKeyLocation, AuthConfig, AuthType, Collection, Folder, HttpMethod, ImportResult,
     ImportWarning, KeyValueItem, RequestBodyConfig, RequestBodyType, RequestItem,
-    RequestScripts,
+    RequestScripts, SavedResponse,
 };
+use chrono::Utc;
 
 pub struct PostmanImporter;
 
@@ -280,9 +281,89 @@ fn process_item(
         // It's a request
         if let Some(mut parsed_req) = parse_request(item, req_val, warnings) {
             parsed_req.scripts = parse_scripts(item);
+            parsed_req.responses = parse_responses(item);
             requests.push(parsed_req);
         }
     }
+}
+
+/// Parse Postman item `response[]` into saved examples.
+fn parse_responses(item: &Value) -> Vec<SavedResponse> {
+    let Some(arr) = item.get("response").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    arr.iter()
+        .filter_map(|resp| {
+            let name = resp
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("Example")
+                .to_string();
+
+            let id = resp
+                .get("id")
+                .and_then(|i| i.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+            // Postman uses `code` (number) and optionally `status` (text).
+            let status = resp
+                .get("code")
+                .and_then(|c| c.as_u64())
+                .or_else(|| {
+                    resp.get("status")
+                        .and_then(|s| s.as_str())
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .unwrap_or(0) as u16;
+
+            let status_text = resp
+                .get("status")
+                .and_then(|s| s.as_str())
+                .filter(|s| s.parse::<u16>().is_err())
+                .unwrap_or("")
+                .to_string();
+
+            let headers = resp
+                .get("header")
+                .and_then(|h| h.as_array())
+                .map(|headers| {
+                    headers
+                        .iter()
+                        .filter_map(|h| {
+                            let key = h.get("key").and_then(|k| k.as_str())?;
+                            let value = h.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                            Some((key.to_string(), value.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let body = resp
+                .get("body")
+                .and_then(|b| {
+                    if let Some(s) = b.as_str() {
+                        Some(s.to_string())
+                    } else if b.is_object() || b.is_array() {
+                        Some(b.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+
+            Some(SavedResponse {
+                id,
+                name,
+                status,
+                status_text,
+                headers,
+                body,
+                created_at: Utc::now(),
+            })
+        })
+        .collect()
 }
 
 fn parse_request(
@@ -624,6 +705,55 @@ mod tests {
         assert_eq!(req.body.body_type, RequestBodyType::GraphQL);
         assert!(req.body.graphql_query.as_ref().unwrap().contains("query GetUser"));
         assert!(req.body.graphql_variables.as_ref().unwrap().contains("\"id\": \"123\""));
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_import_saved_responses() {
+        let json = r#"{
+            "info": { "name": "With Examples" },
+            "item": [
+                {
+                    "name": "Get User",
+                    "request": {
+                        "method": "GET",
+                        "url": "https://api.example.com/users/1"
+                    },
+                    "response": [
+                        {
+                            "id": "ex-ok",
+                            "name": "Success",
+                            "code": 200,
+                            "status": "OK",
+                            "header": [
+                                { "key": "Content-Type", "value": "application/json" }
+                            ],
+                            "body": "{\"id\":1,\"name\":\"Ada\"}"
+                        },
+                        {
+                            "name": "Not Found",
+                            "code": 404,
+                            "status": "Not Found",
+                            "header": [],
+                            "body": "{\"error\":\"missing\"}"
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = PostmanImporter::import_json(json).expect("import succeeds");
+        let req = &result.collection.requests[0];
+        assert_eq!(req.responses.len(), 2);
+        assert_eq!(req.responses[0].id, "ex-ok");
+        assert_eq!(req.responses[0].name, "Success");
+        assert_eq!(req.responses[0].status, 200);
+        assert_eq!(req.responses[0].status_text, "OK");
+        assert_eq!(req.responses[0].headers.len(), 1);
+        assert_eq!(req.responses[0].headers[0].0, "Content-Type");
+        assert!(req.responses[0].body.contains("Ada"));
+        assert_eq!(req.responses[1].name, "Not Found");
+        assert_eq!(req.responses[1].status, 404);
         assert!(result.warnings.is_empty());
     }
 }

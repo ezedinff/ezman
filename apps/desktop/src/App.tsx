@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ResizeHandle } from './components/ResizeHandle';
@@ -19,12 +19,18 @@ import {
   HttpResponse,
   ImportResult,
   RequestItem,
+  SavedResponse,
   ScriptLogEntry,
   TabItem,
 } from './types';
 import { api } from './services/api';
 import { runScript } from './services/scriptRunner';
 import { Send, Plus, Upload, PanelRightOpen } from 'lucide-react';
+
+/** Auto-close unused tabs after this much idle time. */
+const TAB_INACTIVITY_MS = 5 * 60 * 60 * 1000;
+/** How often the inactivity sweeper runs. */
+const TAB_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 const createDefaultRequest = (name = 'New Request', method: HttpMethod = 'GET'): RequestItem => ({
   id: 'req_' + Math.random().toString(36).substring(2, 9),
@@ -34,6 +40,7 @@ const createDefaultRequest = (name = 'New Request', method: HttpMethod = 'GET'):
   params: [],
   headers: [{ key: 'Accept', value: 'application/json', enabled: true }],
   body: { body_type: 'none' },
+  responses: [],
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 });
@@ -61,6 +68,79 @@ const findRequestInCollections = (
   return null;
 };
 
+/** Upsert a request into a collection (or Default Collection) and persist to disk. */
+const upsertRequestInCollections = async (
+  collections: Collection[],
+  req: RequestItem,
+  collectionId: string | undefined
+): Promise<{ collections: Collection[]; collectionId: string } | null> => {
+  if (!collectionId) {
+    let defaultCol = collections.find((c) => c.name === 'Default Collection');
+    if (!defaultCol) {
+      defaultCol = {
+        id: 'col_' + Math.random().toString(36).substring(2, 9),
+        name: 'Default Collection',
+        mcp_allow_secrets: false,
+        variables: [],
+        folders: [],
+        requests: [req],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    } else {
+      defaultCol = {
+        ...defaultCol,
+        requests: [...defaultCol.requests.filter((r) => r.id !== req.id), req],
+        updated_at: new Date().toISOString(),
+      };
+    }
+    await api.saveCollection(defaultCol);
+    return {
+      collections: [...collections.filter((c) => c.id !== defaultCol!.id), defaultCol],
+      collectionId: defaultCol.id,
+    };
+  }
+
+  const targetCol = collections.find((c) => c.id === collectionId);
+  if (!targetCol) return null;
+
+  const updateInFolder = (folders: Folder[]): Folder[] =>
+    folders.map((f) => {
+      const foundIdx = f.requests.findIndex((r) => r.id === req.id);
+      if (foundIdx >= 0) {
+        const reqs = [...f.requests];
+        reqs[foundIdx] = req;
+        return { ...f, requests: reqs };
+      }
+      return { ...f, folders: updateInFolder(f.folders) };
+    });
+
+  let updatedRequests = [...targetCol.requests];
+  let updatedFolders = targetCol.folders;
+  const rootIdx = updatedRequests.findIndex((r) => r.id === req.id);
+  if (rootIdx >= 0) {
+    updatedRequests[rootIdx] = req;
+  } else {
+    updatedFolders = updateInFolder(targetCol.folders);
+    const isInsideFolder = JSON.stringify(updatedFolders) !== JSON.stringify(targetCol.folders);
+    if (!isInsideFolder) {
+      updatedRequests = [...updatedRequests, req];
+    }
+  }
+
+  const updatedCol = {
+    ...targetCol,
+    folders: updatedFolders,
+    requests: updatedRequests,
+    updated_at: new Date().toISOString(),
+  };
+  await api.saveCollection(updatedCol);
+  return {
+    collections: collections.map((c) => (c.id === updatedCol.id ? updatedCol : c)),
+    collectionId: updatedCol.id,
+  };
+};
+
 export const App: React.FC = () => {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [environments, setEnvironments] = useState<Environment[]>([]);
@@ -73,8 +153,21 @@ export const App: React.FC = () => {
   const [splitRatio, setSplitRatio] = useState(() =>
     Number(localStorage.getItem('ezman.splitRatio')) || 50
   );
-  const splitRef = React.useRef<HTMLDivElement>(null);
-  const sessionReadyRef = React.useRef(false);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const sessionReadyRef = useRef(false);
+  const tabsRef = useRef(tabs);
+  const activeTabIdRef = useRef(activeTabId);
+  const collectionsRef = useRef(collections);
+  const sweepRunningRef = useRef(false);
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+  }, [activeTabId]);
+  useEffect(() => {
+    collectionsRef.current = collections;
+  }, [collections]);
   useEffect(() => localStorage.setItem('ezman.sidebarWidth', String(sidebarWidth)), [sidebarWidth]);
   useEffect(() => localStorage.setItem('ezman.splitRatio', String(splitRatio)), [splitRatio]);
   const [responseLayout, setResponseLayout] = useState<'split' | 'maximized' | 'collapsed'>('split');
@@ -128,6 +221,7 @@ export const App: React.FC = () => {
           request: JSON.parse(JSON.stringify(found.request)),
           collection_id: found.collectionId,
           is_dirty: false,
+          last_active_at: Date.now(),
         });
       }
 
@@ -165,28 +259,166 @@ export const App: React.FC = () => {
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
+  const touchTabActivity = useCallback((tabId: string) => {
+    const now = Date.now();
+    setTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, last_active_at: now } : t))
+    );
+  }, []);
+
+  // Background job: save then close tabs idle longer than TAB_INACTIVITY_MS.
+  // Skips pinned tabs and the currently active tab.
+  useEffect(() => {
+    const sweepInactiveTabs = async () => {
+      if (sweepRunningRef.current) return;
+      sweepRunningRef.current = true;
+      try {
+        const cutoff = Date.now() - TAB_INACTIVITY_MS;
+        const activeId = activeTabIdRef.current;
+        const candidates = tabsRef.current.filter(
+          (t) =>
+            !t.pinned &&
+            t.id !== activeId &&
+            typeof t.last_active_at === 'number' &&
+            t.last_active_at < cutoff
+        );
+        if (candidates.length === 0) return;
+
+        let cols = collectionsRef.current;
+        const closable: string[] = [];
+        const tabPatches = new Map<string, { collection_id: string; is_dirty: false }>();
+
+        for (const tab of candidates) {
+          if (!tab.is_dirty) {
+            closable.push(tab.id);
+            continue;
+          }
+          try {
+            const saved = await upsertRequestInCollections(cols, tab.request, tab.collection_id);
+            if (!saved) continue;
+            cols = saved.collections;
+            collectionsRef.current = cols;
+            tabPatches.set(tab.id, { collection_id: saved.collectionId, is_dirty: false });
+            closable.push(tab.id);
+          } catch (e) {
+            console.error('Failed to save idle tab before close:', tab.request.name, e);
+          }
+        }
+
+        if (closable.length === 0) return;
+
+        if (tabPatches.size > 0) {
+          setCollections(cols);
+        }
+
+        const idSet = new Set(closable);
+        setTabs((prev) =>
+          prev
+            .map((t) => {
+              const patch = tabPatches.get(t.id);
+              return patch ? { ...t, ...patch } : t;
+            })
+            .filter((t) => !idSet.has(t.id))
+        );
+      } finally {
+        sweepRunningRef.current = false;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void sweepInactiveTabs();
+    }, TAB_SWEEP_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
   // Tab Operations
   const handleSelectTab = (tabId: string) => {
     setActiveTabId(tabId);
+    touchTabActivity(tabId);
   };
 
-  const handleCloseTab = (tabId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const idx = tabs.findIndex((t) => t.id === tabId);
-    if (idx === -1) return;
+  /** Close the given tab ids; keep focus on keepActiveId when possible. */
+  const closeTabIds = useCallback(
+    (ids: string[], keepActiveId?: string) => {
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      const remaining = tabs.filter((t) => !idSet.has(t.id));
+      const closingActive = !!activeTabId && idSet.has(activeTabId);
 
-    const remaining = tabs.filter((t) => t.id !== tabId);
-    setTabs(remaining);
+      setTabs(remaining);
 
-    if (activeTabId === tabId) {
-      if (remaining.length > 0) {
-        const nextActive = remaining[Math.min(idx, remaining.length - 1)];
-        setActiveTabId(nextActive.id);
-      } else {
+      if (!closingActive) return;
+      if (keepActiveId && remaining.some((t) => t.id === keepActiveId)) {
+        setActiveTabId(keepActiveId);
+      } else if (remaining.length === 0) {
         setActiveTabId(undefined);
+      } else {
+        const closedIdx = tabs.findIndex((t) => t.id === activeTabId);
+        setActiveTabId(remaining[Math.min(Math.max(closedIdx, 0), remaining.length - 1)].id);
       }
-    }
-  };
+    },
+    [tabs, activeTabId]
+  );
+
+  const handleCloseTab = useCallback(
+    (tabId: string) => {
+      closeTabIds([tabId]);
+    },
+    [closeTabIds]
+  );
+
+  const handleTogglePin = useCallback((tabId: string) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.id === tabId);
+      if (idx < 0) return prev;
+      const tab = { ...prev[idx], pinned: !prev[idx].pinned };
+      const without = prev.filter((t) => t.id !== tabId);
+      const pinnedCount = without.filter((t) => t.pinned).length;
+      // Pinned tabs gather on the left; unpin lands just after the pinned group.
+      without.splice(pinnedCount, 0, tab);
+      return without;
+    });
+  }, []);
+
+  const handleCloseOthers = useCallback(
+    (tabId: string) => {
+      const toClose = tabs.filter((t) => t.id !== tabId && !t.pinned).map((t) => t.id);
+      closeTabIds(toClose, tabId);
+    },
+    [tabs, closeTabIds]
+  );
+
+  const handleCloseToRight = useCallback(
+    (tabId: string) => {
+      const idx = tabs.findIndex((t) => t.id === tabId);
+      if (idx < 0) return;
+      const toClose = tabs
+        .slice(idx + 1)
+        .filter((t) => !t.pinned)
+        .map((t) => t.id);
+      closeTabIds(toClose, tabId);
+    },
+    [tabs, closeTabIds]
+  );
+
+  const handleCloseToLeft = useCallback(
+    (tabId: string) => {
+      const idx = tabs.findIndex((t) => t.id === tabId);
+      if (idx < 0) return;
+      const toClose = tabs
+        .slice(0, idx)
+        .filter((t) => !t.pinned)
+        .map((t) => t.id);
+      closeTabIds(toClose, tabId);
+    },
+    [tabs, closeTabIds]
+  );
+
+  const handleCloseAll = useCallback(() => {
+    const toClose = tabs.filter((t) => !t.pinned).map((t) => t.id);
+    const firstPinned = tabs.find((t) => t.pinned)?.id;
+    closeTabIds(toClose, firstPinned);
+  }, [tabs, closeTabIds]);
 
   const handleNewTab = () => {
     const newReq = createDefaultRequest();
@@ -194,8 +426,9 @@ export const App: React.FC = () => {
       id: 'tab_' + newReq.id,
       request: newReq,
       is_dirty: true,
+      last_active_at: Date.now(),
     };
-    setTabs([...tabs, newTab]);
+    setTabs((prev) => [...prev, newTab]);
     setActiveTabId(newTab.id);
   };
 
@@ -204,6 +437,7 @@ export const App: React.FC = () => {
     const existing = tabs.find((t) => t.request.id === req.id);
     if (existing) {
       setActiveTabId(existing.id);
+      touchTabActivity(existing.id);
       return;
     }
 
@@ -213,6 +447,7 @@ export const App: React.FC = () => {
       request: JSON.parse(JSON.stringify(req)),
       collection_id: colId,
       is_dirty: false,
+      last_active_at: Date.now(),
     };
     setTabs([...tabs, newTab]);
     setActiveTabId(newTab.id);
@@ -226,7 +461,7 @@ export const App: React.FC = () => {
     setTabs((prev) =>
       prev.map((t) =>
         t.id === activeTabId
-          ? { ...t, request: updated, is_dirty: true }
+          ? { ...t, request: updated, is_dirty: true, last_active_at: Date.now() }
           : t
       )
     );
@@ -261,10 +496,10 @@ export const App: React.FC = () => {
   const handleSendRequest = useCallback(async () => {
     if (!activeTab || activeTab.loading) return;
 
-    // Set loading
+    // Set loading and mark activity
     setTabs((prev) =>
       prev.map((t) =>
-        t.id === activeTab.id ? { ...t, loading: true } : t
+        t.id === activeTab.id ? { ...t, loading: true, last_active_at: Date.now() } : t
       )
     );
 
@@ -348,103 +583,74 @@ export const App: React.FC = () => {
     }
   }, [activeTab, activeEnvironmentId, environments, collections]);
 
-  // Save Request
-  const handleSaveRequest = useCallback(async () => {
-    if (!activeTab) return;
-    const req = activeTab.request;
-
-    if (!activeTab.collection_id) {
-      // If not belonging to a collection, find or create default collection
-      let defaultCol = collections.find((c) => c.name === 'Default Collection');
-      if (!defaultCol) {
-        defaultCol = {
-          id: 'col_' + Math.random().toString(36).substring(2, 9),
-          name: 'Default Collection',
-          mcp_allow_secrets: false,
-          variables: [],
-          folders: [],
-          requests: [req],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-      } else {
-        defaultCol = {
-          ...defaultCol,
-          requests: [...defaultCol.requests.filter((r) => r.id !== req.id), req],
-        };
-      }
-      await api.saveCollection(defaultCol);
+  // Persist a request into its collection (or Default Collection).
+  const persistRequest = useCallback(
+    async (req: RequestItem, collectionId: string | undefined, tabId: string) => {
+      const saved = await upsertRequestInCollections(collections, req, collectionId);
+      if (!saved) return;
+      collectionsRef.current = saved.collections;
+      setCollections(saved.collections);
       setTabs((prev) =>
         prev.map((t) =>
-          t.id === activeTab.id
-            ? { ...t, collection_id: defaultCol?.id, is_dirty: false }
+          t.id === tabId
+            ? { ...t, collection_id: saved.collectionId, is_dirty: false }
             : t
         )
       );
-      setCollections((prev) => [
-        ...prev.filter((c) => c.id !== defaultCol?.id),
-        defaultCol!,
-      ]);
-      return;
-    }
+    },
+    [collections]
+  );
 
-    // Save into existing collection
-    const targetCol = collections.find((c) => c.id === activeTab.collection_id);
-    if (!targetCol) return;
+  const handleSaveRequest = useCallback(async () => {
+    if (!activeTab) return;
+    await persistRequest(activeTab.request, activeTab.collection_id, activeTab.id);
+  }, [activeTab, persistRequest]);
 
-    // Helper to recursively update request in collection
-    const updateInFolder = (folders: Folder[]): Folder[] => {
-      return folders.map((f) => {
-        const foundIdx = f.requests.findIndex((r) => r.id === req.id);
-        if (foundIdx >= 0) {
-          const reqs = [...f.requests];
-          reqs[foundIdx] = req;
-          return { ...f, requests: reqs };
-        }
-        return { ...f, folders: updateInFolder(f.folders) };
-      });
-    };
-
-    let updatedRequests = [...targetCol.requests];
-    const rootIdx = updatedRequests.findIndex((r) => r.id === req.id);
-    if (rootIdx >= 0) {
-      updatedRequests[rootIdx] = req;
-    } else {
-      // Check in folders
-      const updatedFolders = updateInFolder(targetCol.folders);
-      const isInsideFolder = JSON.stringify(updatedFolders) !== JSON.stringify(targetCol.folders);
-      if (!isInsideFolder) {
-        updatedRequests.push(req);
-      }
-      const updatedCol = {
-        ...targetCol,
-        folders: updatedFolders,
-        requests: updatedRequests,
+  const handleSaveExample = useCallback(
+    async (name: string) => {
+      if (!activeTab?.response || activeTab.response.error) return;
+      const live = activeTab.response;
+      const example: SavedResponse = {
+        id: 'ex_' + Math.random().toString(36).substring(2, 9),
+        name,
+        status: live.status,
+        status_text: live.status_text,
+        headers: live.headers,
+        body: live.body,
+        created_at: new Date().toISOString(),
+      };
+      const updatedReq: RequestItem = {
+        ...activeTab.request,
+        responses: [...(activeTab.request.responses || []), example],
         updated_at: new Date().toISOString(),
       };
-      await api.saveCollection(updatedCol);
-      setCollections((prev) =>
-        prev.map((c) => (c.id === updatedCol.id ? updatedCol : c))
-      );
       setTabs((prev) =>
-        prev.map((t) => (t.id === activeTab.id ? { ...t, is_dirty: false } : t))
+        prev.map((t) =>
+          t.id === activeTab.id ? { ...t, request: updatedReq, is_dirty: false } : t
+        )
       );
-      return;
-    }
+      await persistRequest(updatedReq, activeTab.collection_id, activeTab.id);
+    },
+    [activeTab, persistRequest]
+  );
 
-    const updatedCol = {
-      ...targetCol,
-      requests: updatedRequests,
-      updated_at: new Date().toISOString(),
-    };
-    await api.saveCollection(updatedCol);
-    setCollections((prev) =>
-      prev.map((c) => (c.id === updatedCol.id ? updatedCol : c))
-    );
-    setTabs((prev) =>
-      prev.map((t) => (t.id === activeTab.id ? { ...t, is_dirty: false } : t))
-    );
-  }, [activeTab, collections]);
+  const handleDeleteExample = useCallback(
+    async (id: string) => {
+      if (!activeTab) return;
+      const updatedReq: RequestItem = {
+        ...activeTab.request,
+        responses: (activeTab.request.responses || []).filter((r) => r.id !== id),
+        updated_at: new Date().toISOString(),
+      };
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === activeTab.id ? { ...t, request: updatedReq, is_dirty: false } : t
+        )
+      );
+      await persistRequest(updatedReq, activeTab.collection_id, activeTab.id);
+    },
+    [activeTab, persistRequest]
+  );
 
   // Keyboard Shortcuts
   useEffect(() => {
@@ -458,15 +664,7 @@ export const App: React.FC = () => {
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'w') {
         if (activeTabId) {
           e.preventDefault();
-          const target = activeTabId;
-          const idx = tabs.findIndex((t) => t.id === target);
-          const remaining = tabs.filter((t) => t.id !== target);
-          setTabs(remaining);
-          if (remaining.length > 0) {
-            setActiveTabId(remaining[Math.min(idx, remaining.length - 1)].id);
-          } else {
-            setActiveTabId(undefined);
-          }
+          handleCloseTab(activeTabId);
         }
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 't') {
         e.preventDefault();
@@ -476,7 +674,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSendRequest, handleSaveRequest, activeTabId, tabs]);
+  }, [handleSendRequest, handleSaveRequest, handleCloseTab, activeTabId]);
 
   // Collection CRUD & Renaming
   const handleCreateCollection = async () => {
@@ -634,6 +832,7 @@ export const App: React.FC = () => {
         id: 'tab_' + newReq.id,
         request: newReq,
         is_dirty: true,
+        last_active_at: Date.now(),
       };
       setTabs([...tabs, tab]);
       setActiveTabId(tab.id);
@@ -956,6 +1155,11 @@ export const App: React.FC = () => {
             onSelectTab={handleSelectTab}
             onCloseTab={handleCloseTab}
             onNewTab={handleNewTab}
+            onTogglePin={handleTogglePin}
+            onCloseOthers={handleCloseOthers}
+            onCloseToRight={handleCloseToRight}
+            onCloseToLeft={handleCloseToLeft}
+            onCloseAll={handleCloseAll}
           />
 
           {/* Split Pane: Request Editor & Response Viewer */}
@@ -1027,6 +1231,7 @@ export const App: React.FC = () => {
                 <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
                   <ResponseViewer
                     response={activeTab.response}
+                    savedResponses={activeTab.request.responses || []}
                     scriptLogs={activeTab.script_logs}
                     loading={activeTab.loading}
                     layoutMode={responseLayout}
@@ -1034,6 +1239,8 @@ export const App: React.FC = () => {
                       setResponseLayout(responseLayout === 'maximized' ? 'split' : 'maximized')
                     }
                     onToggleCollapse={() => setResponseLayout('collapsed')}
+                    onSaveResponse={handleSaveExample}
+                    onDeleteResponse={handleDeleteExample}
                   />
                 </div>
                 </>

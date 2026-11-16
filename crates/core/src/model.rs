@@ -187,6 +187,46 @@ pub struct RequestScripts {
     pub post_response: String,
 }
 
+/// Named snapshot of an HTTP response, stored with a request (Postman-style example).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedResponse {
+    pub id: String,
+    pub name: String,
+    pub status: u16,
+    pub status_text: String,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl SavedResponse {
+    pub fn from_http_response(id: impl Into<String>, name: impl Into<String>, response: &HttpResponse) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            status: response.status,
+            status_text: response.status_text.clone(),
+            headers: response.headers.clone(),
+            body: response.body.clone(),
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn to_http_response(&self) -> HttpResponse {
+        HttpResponse {
+            status: self.status,
+            status_text: self.status_text.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            duration_ms: 0,
+            size_bytes: self.body.len(),
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestItem {
     pub id: String,
@@ -207,6 +247,9 @@ pub struct RequestItem {
     pub body: RequestBodyConfig,
     #[serde(default)]
     pub scripts: RequestScripts,
+    /// Saved example responses for this request (Postman `response[]`).
+    #[serde(default)]
+    pub responses: Vec<SavedResponse>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -226,6 +269,7 @@ impl RequestItem {
             auth: None,
             body: RequestBodyConfig::default(),
             scripts: RequestScripts::default(),
+            responses: Vec::new(),
             created_at: now,
             updated_at: now,
         }

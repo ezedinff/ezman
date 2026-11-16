@@ -6,6 +6,7 @@ A lightweight desktop API client with a local MCP server for AI agents. Built wi
 
 - Organize requests into collections and folders.
 - Use environments, variables, authentication, and JSON or GraphQL bodies.
+- Save response examples on a request (Postman-style) and import them from Postman collections.
 - Import Postman v2.1 collections.
 - Let AI agents manage collections and execute saved requests through MCP.
 
