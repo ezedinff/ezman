@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 use ezman_core::{
     AppPreferences, Collection, Environment, HttpEngine, HttpResponse,
-    ImportResult, PostmanImporter, RequestItem, StorageManager, VariableResolver,
+    ImportResult, PostmanImporter, TextDiff, TextDiffOptions, RequestItem, StorageManager, VariableResolver,
 };
 
 struct AppState {
@@ -129,6 +129,18 @@ fn get_mcp_info() -> Result<McpInfo, String> {
     })
 }
 
+#[tauri::command]
+async fn compare_texts(a: String, b: String, options: TextDiffOptions) -> Result<TextDiff, String> {
+    tokio::task::spawn_blocking(move || ezman_core::diff_texts(&a, &b, &options))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let storage = Arc::new(StorageManager::new().expect("Failed to initialize storage manager"));
@@ -137,6 +149,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(AppState {
                 storage,
@@ -158,6 +171,8 @@ pub fn run() {
             import_postman_collection,
             execute_request,
             get_mcp_info,
+            write_text_file,
+            compare_texts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

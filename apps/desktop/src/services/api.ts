@@ -1,3 +1,4 @@
+import { DiffOptions, DiffResult } from '../types/textDiff';
 import { Collection, Environment, HttpResponse, ImportResult, RequestItem, AppPreferences } from '../types';
 
 declare global {
@@ -60,6 +61,12 @@ const setLocalEnvironments = (envs: Environment[]) => {
 };
 
 export const api = {
+  async compareTexts(a: string, b: string, options: DiffOptions): Promise<DiffResult> {
+    const invoke = await getInvoke();
+    if (!invoke) throw new Error('File comparison is only available in the desktop app');
+    return invoke<DiffResult>('compare_texts', { a, b, options });
+  },
+
   async getMcpInfo(): Promise<{ path: string; exists: boolean } | null> {
     const invoke = await getInvoke();
     return invoke ? await invoke<{ path: string; exists: boolean }>('get_mcp_info') : null;
@@ -276,4 +283,23 @@ export const api = {
       };
     }
   },
+};
+
+/** Prompts for a destination and writes the text there. Returns the saved path, or null if cancelled. */
+export const saveTextFile = async (defaultName: string, content: string): Promise<string | null> => {
+  const invoke = await getInvoke();
+  if (invoke) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const path = await save({ defaultPath: defaultName, filters: [{ name: 'Text', extensions: ['txt'] }] });
+    if (!path) return null;
+    await invoke('write_text_file', { path, content });
+    return path;
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = defaultName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return defaultName;
 };

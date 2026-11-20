@@ -6,3 +6,6 @@ dist/
 .env
 .env.*
 *.key
+
+apps/jira-browser-automation/
+*.txt

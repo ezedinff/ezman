@@ -5,6 +5,7 @@ pub mod error;
 pub mod http;
 pub mod model;
 pub mod storage;
+pub mod textdiff;
 
 pub use auth::apply_auth;
 pub use collection::PostmanImporter;
@@ -17,3 +18,4 @@ pub use error::{CoreError, Result};
 pub use http::{HttpEngine, HttpEngineConfig};
 pub use model::*;
 pub use storage::StorageManager;
+pub use textdiff::{diff_texts, DiffCell, DiffKind, DiffRow, TextDiff, TextDiffOptions};

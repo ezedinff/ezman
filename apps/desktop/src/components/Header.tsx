@@ -1,5 +1,5 @@
 import React from 'react';
-import { Send, Upload, Settings, Layers, Plug } from 'lucide-react';
+import { Send, Upload, Settings, Layers, Plug, GitCompare } from 'lucide-react';
 import { Environment } from '../types';
 
 interface HeaderProps {
@@ -9,6 +9,7 @@ interface HeaderProps {
   onOpenEnvironmentModal: () => void;
   onOpenImportModal: () => void;
   onOpenMcpModal: () => void;
+  onOpenCompareModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,6 +19,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenEnvironmentModal,
   onOpenImportModal,
   onOpenMcpModal,
+  onOpenCompareModal,
 }) => {
   return (
     <header className="h-12 border-b border-gray-800 bg-[#16181d] px-4 flex items-center justify-between select-none">
@@ -70,6 +72,15 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Upload className="w-3.5 h-3.5 text-blue-400" />
           <span>Import Postman</span>
+        </button>
+
+        <button
+          onClick={onOpenCompareModal}
+          title="Compare two text files"
+          className="flex items-center space-x-1.5 bg-[#1e2129] hover:bg-gray-700/70 border border-gray-700/60 text-gray-200 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+        >
+          <GitCompare className="w-3.5 h-3.5 text-amber-400" />
+          <span>Compare</span>
         </button>
 
         <button
