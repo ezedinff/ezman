@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { X, FileText, Download } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { X, FileText, Download, Filter } from 'lucide-react';
 import { Cell, DiffKind, DiffOptions, DiffResult } from '../types/textDiff';
 import { api, saveTextFile } from '../services/api';
 
@@ -47,7 +47,9 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
     ignore_columns: [],
     trim_fields: true,
   });
-  const [columnsText, setColumnsText] = useState('');
+  const [split, setSplit] = useState(50);
+  const panesRef = useRef<HTMLDivElement>(null);
+  const [columnsOpen, setColumnsOpen] = useState(false);
   const [showUnchanged, setShowUnchanged] = useState(false);
   const [limit, setLimit] = useState(MAX_ROWS);
   const [status, setStatus] = useState('');
@@ -58,6 +60,41 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, onClose]);
+
+  // The first non-empty line of each file is treated as the header for column names.
+  const columns = useMemo(() => {
+    if (!opts.delimiter) return [];
+    const header = (f: LoadedFile | null) =>
+      (f?.text.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').split(opts.delimiter!).map((c) => c.trim());
+    const a = header(fileA);
+    const b = header(fileB);
+    const n = Math.max(a.length, b.length);
+    return Array.from({ length: n }, (_, i) => a[i] || b[i] || `Column ${i}`);
+  }, [fileA, fileB, opts.delimiter]);
+
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const rect = panesRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setSplit(Math.min(90, Math.max(10, ((ev.clientX - rect.left) / rect.width) * 100)));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+    };
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+  const gridStyle = { gridTemplateColumns: `minmax(0, ${split}fr) minmax(0, ${100 - split}fr)` };
+
+  const toggleColumn = (i: number, included: boolean) =>
+    setOpts({
+      ...opts,
+      ignore_columns: included ? opts.ignore_columns.filter((c) => c !== i) : [...opts.ignore_columns, i],
+    });
 
   const [result, setResult] = useState<DiffResult | null>(null);
 
@@ -80,6 +117,23 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
     setLimit(MAX_ROWS);
     setStatus('');
   }, [result, showUnchanged]);
+
+  // Fixed per-column widths (in ch) so delimited rows line up like a table.
+  const colWidths = useMemo(() => {
+    const d = opts.delimiter;
+    if (!d || !result) return null;
+    const widths: number[] = [];
+    for (const r of result.rows) {
+      for (const c of [r.left, r.right]) {
+        if (!c) continue;
+        c.text.split(d).forEach((f, i) => {
+          const len = (opts.trim_fields ? f.trim() : f).length;
+          widths[i] = Math.min(Math.max(widths[i] ?? 0, len), 40);
+        });
+      }
+    }
+    return widths;
+  }, [result, opts.delimiter, opts.trim_fields]);
 
   if (!isOpen) return null;
 
@@ -114,13 +168,32 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
   };
   const sign: Record<DiffKind, string> = { removed: '-', added: '+', unchanged: ' ' };
 
+  const renderText = (c: Cell) => {
+    const d = opts.delimiter;
+    if (!d || !colWidths) return <span className="flex-1 min-w-0 whitespace-pre-wrap break-all">{c.text}</span>;
+    return (
+      <span className="flex-1 min-w-0 flex overflow-hidden">
+        {c.text.split(d).map((f, i) => (
+          <span
+            key={i}
+            title={f.trim()}
+            className={`flex-shrink-0 truncate pr-3 whitespace-pre ${opts.ignore_columns.includes(i) ? 'opacity-40' : ''}`}
+            style={{ width: `${(colWidths[i] ?? 0) + 3}ch` }}
+          >
+            {opts.trim_fields ? f.trim() : f}
+          </span>
+        ))}
+      </span>
+    );
+  };
+
   const renderCell = (c: Cell | null | undefined) => (
-    <div className={`flex min-w-0 px-2 py-0.5 whitespace-pre-wrap break-all ${c ? style[c.kind] : 'bg-gray-800/20'}`}>
+    <div className={`flex min-w-0 px-2 py-0.5 ${c ? style[c.kind] : 'bg-gray-800/20'}`}>
       {c && (
         <>
           <span className="w-10 flex-shrink-0 text-right pr-2 text-gray-600 select-none">{c.line}</span>
           <span className="w-4 flex-shrink-0 select-none">{sign[c.kind]}</span>
-          <span className="flex-1 min-w-0">{c.text}</span>
+          {renderText(c)}
         </>
       )}
     </div>
@@ -156,7 +229,7 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
               <select
                 className="bg-[#1e2129] border border-gray-700/60 rounded px-1.5 py-0.5"
                 value={opts.delimiter ?? ''}
-                onChange={(e) => setOpts({ ...opts, delimiter: e.target.value || null })}
+                onChange={(e) => setOpts({ ...opts, delimiter: e.target.value || null, ignore_columns: [] })}
               >
                 <option value="">None (whole line)</option>
                 <option value="|">| (pipe)</option>
@@ -165,25 +238,51 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
             </label>
             {opts.delimiter && (
               <>
-                <label className="flex items-center space-x-1.5">
-                  <span>Ignore columns (0-based)</span>
-                  <input
-                    className="w-24 bg-[#1e2129] border border-gray-700/60 rounded px-1.5 py-0.5"
-                    placeholder="0,3"
-                    value={columnsText}
-                    onChange={(e) => {
-                      setColumnsText(e.target.value);
-                      setOpts({
-                        ...opts,
-                        ignore_columns: e.target.value
-                          .split(',')
-                          .map((v) => v.trim())
-                          .filter((v) => /^\d+$/.test(v))
-                          .map(Number),
-                      });
-                    }}
-                  />
-                </label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setColumnsOpen((o) => !o)}
+                    className="flex items-center space-x-1.5 bg-[#1e2129] hover:bg-gray-700/70 border border-gray-700/60 rounded px-2 py-0.5"
+                  >
+                    <Filter className="w-3.5 h-3.5 text-blue-400" />
+                    <span>
+                      Key columns ({Math.max(columns.length - opts.ignore_columns.filter((c) => c < columns.length).length, 0)}/
+                      {columns.length})
+                    </span>
+                  </button>
+                  {columnsOpen && (
+                    <div className="absolute left-0 top-full mt-1 z-20 w-72 max-h-80 flex flex-col bg-[#1e2129] border border-gray-700 rounded-md shadow-2xl">
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700/60">
+                        <span className="text-gray-400">Columns in uniqueness key</span>
+                        <div className="space-x-2">
+                          <button className="text-blue-400 hover:underline" onClick={() => setOpts({ ...opts, ignore_columns: [] })}>
+                            All
+                          </button>
+                          <button
+                            className="text-blue-400 hover:underline"
+                            onClick={() => setOpts({ ...opts, ignore_columns: columns.map((_, i) => i) })}
+                          >
+                            None
+                          </button>
+                        </div>
+                      </div>
+                      <div className="overflow-auto py-1">
+                        {columns.map((name, i) => (
+                          <label key={i} className="flex items-center space-x-2 px-3 py-1 hover:bg-gray-700/40 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!opts.ignore_columns.includes(i)}
+                              onChange={(e) => toggleColumn(i, e.target.checked)}
+                            />
+                            <span className="text-gray-500 w-6 text-right">{i}</span>
+                            <span className="truncate">{name}</span>
+                          </label>
+                        ))}
+                        {columns.length === 0 && <div className="px-3 py-2 text-gray-500">Load a file to list columns.</div>}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 {toggle('trim_fields', 'Trim fields')}
               </>
             )}
@@ -196,13 +295,20 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
           ) : rows.length === 0 ? (
             <div className="p-6 text-gray-500 text-center">No changed entries.</div>
           ) : (
-            <>
-              <div className="sticky top-0 grid grid-cols-2 gap-px bg-gray-800 text-gray-400 z-10">
+            <div ref={panesRef} className="relative">
+              <div
+                onMouseDown={startDrag}
+                onDoubleClick={() => setSplit(50)}
+                title="Drag to resize (double-click to reset)"
+                className="absolute top-0 bottom-0 w-2 -ml-1 z-20 cursor-col-resize hover:bg-blue-500/40"
+                style={{ left: `${split}%` }}
+              />
+              <div className="sticky top-0 grid gap-px bg-gray-800 text-gray-400 z-10" style={gridStyle}>
                 <div className="bg-[#1e2129] px-3 py-1 truncate">{fileA?.name} (original)</div>
                 <div className="bg-[#1e2129] px-3 py-1 truncate">{fileB?.name} (modified)</div>
               </div>
               {rows.slice(0, limit).map((r, i) => (
-                <div key={i} className="grid grid-cols-2 gap-px bg-gray-800/60">
+                <div key={i} className="grid gap-px bg-gray-800/60" style={gridStyle}>
                   {renderCell(r.left)}
                   {renderCell(r.right)}
                 </div>
@@ -215,7 +321,7 @@ export const CompareModal: React.FC<CompareModalProps> = ({ isOpen, onClose }) =
                   Show more ({rows.length - limit} remaining)
                 </button>
               )}
-            </>
+            </div>
           )}
         </div>
 
